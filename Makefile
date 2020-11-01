@@ -17,7 +17,7 @@ blur-test: test.o exr.o
 exr.o: exr.cxx
 	$(CXX) -c $< $(CXXFLAGS)
 
-test.o: test.cu blur.cu
+test.o: test.cu blur.cu timer.h image.h
 	$(NVCC) -c $< $(NVCCFLAGS)
 
 clean:
