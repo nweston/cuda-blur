@@ -102,3 +102,93 @@ void vertical_box_blur(ImageT* dest, const ImageT* source, image_dims dims,
   vertical_box_blur_kernel<<<grid_dim, BLOCK_SIZE>>>(dest, source, dims,
                                                      radius);
 }
+
+void box_blur(ImageT* dest, const ImageT* source, ImageT* temp, image_dims dims,
+              int radius) {
+  const int BLOCK_SIZE = 128;
+
+  // Vertical blur
+  {
+    int grid_dim = n_blocks(dims.width, BLOCK_SIZE);
+    vertical_box_blur_kernel<<<grid_dim, BLOCK_SIZE>>>(temp, source, dims,
+                                                       radius);
+  }
+
+  transpose(dest, temp, dims);
+
+  // Horizontal blur
+  {
+    // Transpose turns any horizontal padding into vertical padding. Ignore
+    // those extra pixels when blurring.
+    image_dims transpose_dims = {dims.height, dims.width, dims.channel_count,
+                                 dims.sizeof_channel, dims.height};
+    int grid_dim = n_blocks(transpose_dims.width, BLOCK_SIZE);
+    vertical_box_blur_kernel<<<grid_dim, BLOCK_SIZE>>>(temp, dest,
+                                                       transpose_dims, radius);
+  }
+
+  // Transpose back to the original format. This version of the dims includes
+  // the extra height.
+  transpose(dest, temp,
+            {dims.height, dims.stride_pixels, dims.channel_count,
+             dims.sizeof_channel, dims.height});
+}
+
+// Blur an image with a repeated box blur.
+// 2 passes approximates a triangle filter, 3 is close enough to a Gaussian.
+// The radius param indicates the total radius: it will be divided
+// more-or-less equally between the passes.
+// dest and source may point to the same image (if you don't need to keep the
+// source image and want to save some memory).
+void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
+                 image_dims dims, int radius, int n_passes) {
+  const int BLOCK_SIZE = 128;
+
+  // Each blur pass and transpose needs to read from one image and write to
+  // another. To avoid any copying, we swap these pointers around after each
+  // operation.
+  ImageT* from = dest;
+  ImageT* to = temp;
+
+  // Vertical blur
+  {
+    int remaining = radius;
+    int grid_dim = n_blocks(dims.width, BLOCK_SIZE);
+    for (int i = 0; i < n_passes; i++) {
+      int this_radius = remaining / (n_passes - i);
+      remaining -= this_radius;
+      // On the very first pass, read from the source image
+      const ImageT* s = (i == 0) ? source : from;
+      vertical_box_blur_kernel<<<grid_dim, BLOCK_SIZE>>>(to, s, dims,
+                                                         this_radius);
+      std::swap(to, from);
+    }
+  }
+
+  transpose(to, from, dims);
+  std::swap(to, from);
+
+  // Horizontal blur
+  {
+    int remaining = radius;
+    // Transpose turns any horizontal padding into vertical padding. Ignore
+    // those extra pixels when blurring.
+    image_dims transpose_dims = {dims.height, dims.width, dims.channel_count,
+                                 dims.sizeof_channel, dims.height};
+    int grid_dim = n_blocks(transpose_dims.width, BLOCK_SIZE);
+    for (int i = 0; i < n_passes; i++) {
+      int this_radius = remaining / (n_passes - i);
+      remaining -= this_radius;
+      vertical_box_blur_kernel<<<grid_dim, BLOCK_SIZE>>>(
+          to, from, transpose_dims, this_radius);
+      std::swap(to, from);
+    }
+  }
+
+  // Transpose back to the original format. This version of the dims includes
+  // the extra height.
+  transpose(to, from,
+            {dims.height, dims.stride_pixels, dims.channel_count,
+             dims.sizeof_channel, dims.height});
+  assert(to == dest);
+}
