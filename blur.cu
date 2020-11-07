@@ -1,3 +1,5 @@
+#include <assert.h>
+#include <cooperative_groups.h>
 #include "cuda_runtime_api.h"
 
 #define cudaCheckError(code)                                         \
@@ -30,10 +32,36 @@ __device__ static float4& operator-=(float4& a, const float4& b) {
   return a;
 }
 
-// ===== Blur functions =====
+// ===== General Utilities =====
+
+// Type used for image data. This will eventually be templated to support
+// different vector lengths, as well as half-float data.
 using ImageT = float4;
+// Type of temporary values. This will always be some kind of float, even
+// when ImageT is half-float.
 using TempT = float4;
 
+// Naive transpose
+// Supporting vector types with a shared-memory transpose is non-trivial, and
+// this is fast enough for now.
+__global__ void transpose_kernel(ImageT* dest, const ImageT* source,
+                                 image_dims dims) {
+  int x = blockIdx.x * blockDim.x + threadIdx.x;
+  int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+  if (x >= dims.width || y >= dims.height)
+    return;
+
+  dest[x * dims.height + y] = source[pixel_index(dims, x, y)];
+}
+
+void transpose(ImageT* dest, const ImageT* source, image_dims dims) {
+  dim3 grid(n_blocks(dims.width, 16), n_blocks(dims.height, 16));
+  dim3 threads(16, 16);
+  transpose_kernel<<<grid, threads>>>(dest, source, dims);
+}
+
+// ===== Blur functions =====
 __device__ static int cuda_index() {
   return blockIdx.x * blockDim.x + threadIdx.x;
 }
