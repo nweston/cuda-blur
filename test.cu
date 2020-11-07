@@ -36,12 +36,20 @@ void copy_image(void* dest, const void* source, image_dims dims) {
 }
 
 int main(int argc, char** argv) {
-  auto [pixels, dims] = read_exr(argv[1]);
+  int radius = (argc > 3) ? std::stoi(argv[3]) : 5;
 
-  auto device_pixels = alloc_and_copy(pixels.get(), dims);
+  auto [pixels, _dims] = read_exr(argv[1]);
+  // Work around stupid "structured binding can't be captured" issue
+  auto dims = _dims;
+
+  auto source = alloc_and_copy(pixels.get(), dims);
+  auto dest = cuda_malloc_unique<float4>(allocated_bytes(dims));
+
+  timeit("vertical blur",
+         [&]() { vertical_box_blur(dest.get(), source.get(), dims, radius); });
 
   // Copy result back to host and write
-  copy_image(pixels.get(), device_pixels.get(), dims);
+  copy_image(pixels.get(), dest.get(), dims);
   write_exr(argv[2], dims, pixels.get());
   return 0;
 }
