@@ -47,8 +47,13 @@ int main(int argc, char** argv) {
   auto dest = cuda_malloc_unique<float4>(allocated_bytes(dims));
   auto temp = cuda_malloc_unique<float4>(allocated_bytes(dims));
 
-  timeit("blur", [&]() {
+  timeit("smooth blur", [&]() {
     smooth_blur(dest.get(), source.get(), temp.get(), dims, radius, n_passes);
+  });
+
+  timeit("texture blur", [&]() {
+    smooth_blur_texture(dest.get(), source.get(), temp.get(), dims, radius,
+                        n_passes);
   });
 
   // Copy result back to host and write
