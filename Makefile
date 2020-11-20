@@ -4,7 +4,7 @@ NVCC = ${CUDAPATH}/bin/nvcc
 OPENEXR_LIBS = -lIlmImf-2_5 -lImath-2_5 -lHalf-2_5 -lIex-2_5 -lIexMath-2_5 -lIlmThread-2_5 -lz
 # Note: can't use -Wpedantic here because the code CUDA passes to gcc
 # triggers warnings.
-WFLAGS =  -Werror -Wall
+WFLAGS =  -Werror -Wall -Wno-error=unused-function
 
 EXRPATH = /usr/local/openexr-2.5.2
 NVCCFLAGS = --compiler-options="$(WFLAGS)" -std=c++17
