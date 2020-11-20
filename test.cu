@@ -35,6 +35,23 @@ void copy_image(void* dest, const void* source, image_dims dims) {
       cudaMemcpy(dest, source, allocated_bytes(dims), cudaMemcpyDefault));
 }
 
+// Reduce width but keep stride unchanged, to test handling of padded images.
+// Fill padding with infinite values, which should make it obvious if these
+// pixels are accidentally accessed.
+void crop_image(float4* image, image_dims& dims) {
+  dims.width -= 9;
+  auto inf = std::numeric_limits<float>::infinity();
+
+  for (size_t y = 0; y < dims.height; y++) {
+    for (size_t x = dims.width; x < dims.stride_pixels; x++) {
+      image[pixel_index(dims, x, y)] = {inf, inf, inf, inf};
+    }
+  }
+}
+
+const bool do_crop = false;
+const bool do_texture = false;
+
 int main(int argc, char** argv) {
   int radius = (argc > 3) ? std::stoi(argv[3]) : 5;
   int n_passes = (argc > 4) ? std::stoi(argv[4]) : 3;
@@ -42,6 +59,9 @@ int main(int argc, char** argv) {
   auto [pixels, _dims] = read_exr(argv[1]);
   // Work around stupid "structured binding can't be captured" issue
   auto dims = _dims;
+
+  if (do_crop)
+    crop_image(pixels.get(), dims);
 
   auto source = alloc_and_copy(pixels.get(), dims);
   auto dest = cuda_malloc_unique<float4>(allocated_bytes(dims));
@@ -51,10 +71,12 @@ int main(int argc, char** argv) {
     smooth_blur(dest.get(), source.get(), temp.get(), dims, radius, n_passes);
   });
 
-  timeit("texture blur", [&]() {
-    smooth_blur_texture(dest.get(), source.get(), temp.get(), dims, radius,
-                        n_passes);
-  });
+  if (do_texture) {
+    timeit("texture blur", [&]() {
+      smooth_blur_texture(dest.get(), source.get(), temp.get(), dims, radius,
+                          n_passes);
+    });
+  }
 
   // Copy result back to host and write
   copy_image(pixels.get(), dest.get(), dims);
