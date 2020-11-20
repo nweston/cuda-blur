@@ -10,7 +10,7 @@
 template <class T>
 void timeit(const std::string &name, T function,
             std::ostream &out = std::cout) {
-  const int RUNS = 5;
+  const int RUNS = 50;
   auto total_time = std::chrono::milliseconds(0);
 
   for (int i = 0; i < RUNS; i++) {
