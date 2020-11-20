@@ -92,30 +92,28 @@ void transpose(ImageT* dest, const ImageT* source, image_dims dims) {
 // ===== Blur functions =====
 __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
                                          image_dims dims, int radius) {
-  int x = cuda_index();
-  if (x >= dims.width)
-    return;
-
   float scale = 1.0f / (2 * radius + 1);
 
-  // Fill initial box, repeating the edge pixel
-  TempT edge = source[pixel_index(dims, x, 0)];
-  TempT sum = edge * (radius + 1);
-  for (int y = 1; y < radius + 1; y++) {
-    sum += source[pixel_index(dims, x, y)];
-  }
+  for (int x = cuda_index(); x < dims.width; x += blockDim.x * gridDim.x) {
+    // Fill initial box, repeating the edge pixel
+    TempT edge = source[pixel_index(dims, x, 0)];
+    TempT sum = edge * (radius + 1);
+    for (int y = 1; y < radius + 1; y++) {
+      sum += source[pixel_index(dims, x, y)];
+    }
 
-  // Compute result pixels
-  int top = -radius;
-  int bottom = radius;
-  for (int y = 0; y < dims.height; y++) {
-    dest[pixel_index(dims, x, y)] = sum * scale;
+    // Compute result pixels
+    int top = -radius;
+    int bottom = radius;
+    for (int y = 0; y < dims.height; y++) {
+      dest[pixel_index(dims, x, y)] = sum * scale;
 
-    // Shift the box
-    sum -= source[pixel_index(dims, x, max(top, 0))];
-    top++;
-    bottom++;
-    sum += source[pixel_index(dims, x, min(bottom, int(dims.height - 1)))];
+      // Shift the box
+      sum -= source[pixel_index(dims, x, max(top, 0))];
+      top++;
+      bottom++;
+      sum += source[pixel_index(dims, x, min(bottom, int(dims.height - 1)))];
+    }
   }
 }
 
@@ -194,7 +192,8 @@ void box_blur(ImageT* dest, const ImageT* source, ImageT* temp, image_dims dims,
 // dest and source may point to the same image (if you don't need to keep the
 // source image and want to save some memory).
 void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
-                 image_dims dims, int radius, int n_passes) {
+                 image_dims dims, int radius, int n_passes,
+                 int outputs_per_thread = 1) {
   const int BLOCK_SIZE = 128;
 
   // Each blur pass and transpose needs to read from one image and write to
@@ -206,7 +205,7 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
   // Vertical blur
   {
     int remaining = radius;
-    int grid_dim = n_blocks(dims.width, BLOCK_SIZE);
+    int grid_dim = n_blocks(dims.width, BLOCK_SIZE) / outputs_per_thread;
     for (int i = 0; i < n_passes; i++) {
       int this_radius = remaining / (n_passes - i);
       remaining -= this_radius;
@@ -248,7 +247,8 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
 
 // Like smooth_blur, but use textures for horizontal blur
 void smooth_blur_texture(ImageT* dest, const ImageT* source, ImageT* temp,
-                         image_dims dims, int radius, int n_passes) {
+                         image_dims dims, int radius, int n_passes,
+                         int outputs_per_thread = 1) {
   const int BLOCK_SIZE = 128;
 
   // Each blur pass and transpose needs to read from one image and write to
@@ -260,7 +260,7 @@ void smooth_blur_texture(ImageT* dest, const ImageT* source, ImageT* temp,
   // Vertical blur
   {
     int remaining = radius;
-    int grid_dim = n_blocks(dims.width, BLOCK_SIZE);
+    int grid_dim = n_blocks(dims.width, BLOCK_SIZE) / outputs_per_thread;
     for (int i = 0; i < n_passes; i++) {
       int this_radius = remaining / (n_passes - i);
       remaining -= this_radius;
@@ -275,7 +275,7 @@ void smooth_blur_texture(ImageT* dest, const ImageT* source, ImageT* temp,
   // Horizontal blur
   {
     int remaining = radius;
-    int grid_dim = n_blocks(dims.height, BLOCK_SIZE);
+    int grid_dim = n_blocks(dims.height, BLOCK_SIZE) / outputs_per_thread;
     for (int i = 0; i < n_passes; i++) {
       int this_radius = remaining / (n_passes - i);
       remaining -= this_radius;
