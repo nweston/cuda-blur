@@ -90,33 +90,29 @@ void transpose(ImageT* dest, const ImageT* source, image_dims dims) {
 }
 
 // ===== Blur functions =====
-template <int ThreadOutputs = 1>
 __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
                                          image_dims dims, int radius) {
   float scale = 1.0f / (2 * radius + 1);
-  TempT sum[ThreadOutputs];
 
-#pragma unroll 4
-  for (int x = cuda_index(), i = 0; x < dims.width;
-       x += blockDim.x * gridDim.x, i++) {
+  for (int x = cuda_index(); x < dims.width; x += blockDim.x * gridDim.x) {
     // Fill initial box, repeating the edge pixel
     TempT edge = source[pixel_index(dims, x, 0)];
-    sum[i] = edge * (radius + 1);
+    TempT sum = edge * (radius + 1);
     for (int y = 1; y < radius + 1; y++) {
-      sum[i] += source[pixel_index(dims, x, y)];
+      sum += source[pixel_index(dims, x, y)];
     }
 
     // Compute result pixels
     int top = -radius;
     int bottom = radius;
     for (int y = 0; y < dims.height; y++) {
-      dest[pixel_index(dims, x, y)] = sum[i] * scale;
+      dest[pixel_index(dims, x, y)] = sum * scale;
 
       // Shift the box
-      sum[i] -= source[pixel_index(dims, x, max(top, 0))];
+      sum -= source[pixel_index(dims, x, max(top, 0))];
       top++;
       bottom++;
-      sum[i] += source[pixel_index(dims, x, min(bottom, int(dims.height - 1)))];
+      sum += source[pixel_index(dims, x, min(bottom, int(dims.height - 1)))];
     }
   }
 }
@@ -198,25 +194,7 @@ void box_blur(ImageT* dest, const ImageT* source, ImageT* temp, image_dims dims,
 void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
                  image_dims dims, int radius, int n_passes,
                  int outputs_per_thread = 1) {
-  const int BLOCK_SIZE = 64;
-
-  auto kernel = vertical_box_blur_kernel<1>;
-  assert(outputs_per_thread <= 4);
-  switch (outputs_per_thread) {
-    case 1:
-      break;
-    case 2:
-      kernel = vertical_box_blur_kernel<2>;
-      break;
-    case 3:
-      kernel = vertical_box_blur_kernel<3>;
-      break;
-    case 4:
-      kernel = vertical_box_blur_kernel<4>;
-      break;
-    default:
-      assert(0);
-  }
+  const int BLOCK_SIZE = 128;
 
   // Each blur pass and transpose needs to read from one image and write to
   // another. To avoid any copying, we swap these pointers around after each
@@ -253,7 +231,8 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
     for (int i = 0; i < n_passes; i++) {
       int this_radius = remaining / (n_passes - i);
       remaining -= this_radius;
-      kernel<<<grid_dim, BLOCK_SIZE>>>(to, from, transpose_dims, this_radius);
+      vertical_box_blur_kernel<<<grid_dim, BLOCK_SIZE>>>(
+          to, from, transpose_dims, this_radius);
       std::swap(to, from);
     }
   }
