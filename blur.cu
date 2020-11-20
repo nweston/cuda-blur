@@ -94,51 +94,28 @@ template <int ThreadOutputs = 1>
 __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
                                          image_dims dims, int radius) {
   float scale = 1.0f / (2 * radius + 1);
-
-  TempT edge[ThreadOutputs];
   TempT sum[ThreadOutputs];
-  int limit = ThreadOutputs;
 
 #pragma unroll 4
-  for (int i = 0; i < ThreadOutputs; i++) {
-    int x = cuda_index() + i * blockDim.x * gridDim.x;
-    if (x >= dims.width) {
-      limit = i;
-      break;
-    }
-
+  for (int x = cuda_index(), i = 0; x < dims.width;
+       x += blockDim.x * gridDim.x, i++) {
     // Fill initial box, repeating the edge pixel
-    edge[i] = source[pixel_index(dims, x, 0)];
-    sum[i] = edge[i] * (radius + 1);
-  }
-
-  for (int y = 1; y < radius + 1; y++) {
-#pragma unroll 4
-    for (int i = 0; i < limit; i++) {
-      int x = cuda_index() + i * blockDim.x * gridDim.x;
+    TempT edge = source[pixel_index(dims, x, 0)];
+    sum[i] = edge * (radius + 1);
+    for (int y = 1; y < radius + 1; y++) {
       sum[i] += source[pixel_index(dims, x, y)];
     }
-  }
 
-  // Compute result pixels
-  int top = -radius;
-  int bottom = radius;
-  for (int y = 0; y < dims.height; y++) {
-#pragma unroll 4
-    for (int i = 0; i < limit; i++) {
-      int x = cuda_index() + i * blockDim.x * gridDim.x;
+    // Compute result pixels
+    int top = -radius;
+    int bottom = radius;
+    for (int y = 0; y < dims.height; y++) {
       dest[pixel_index(dims, x, y)] = sum[i] * scale;
 
       // Shift the box
       sum[i] -= source[pixel_index(dims, x, max(top, 0))];
-    }
-
-    top++;
-    bottom++;
-
-#pragma unroll 4
-    for (int i = 0; i < limit; i++) {
-      int x = cuda_index() + i * blockDim.x * gridDim.x;
+      top++;
+      bottom++;
       sum[i] += source[pixel_index(dims, x, min(bottom, int(dims.height - 1)))];
     }
   }
@@ -221,7 +198,7 @@ void box_blur(ImageT* dest, const ImageT* source, ImageT* temp, image_dims dims,
 void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
                  image_dims dims, int radius, int n_passes,
                  int outputs_per_thread = 1) {
-  const int BLOCK_SIZE = 128;
+  const int BLOCK_SIZE = 64;
 
   auto kernel = vertical_box_blur_kernel<1>;
   assert(outputs_per_thread <= 4);
@@ -256,7 +233,8 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
       remaining -= this_radius;
       // On the very first pass, read from the source image
       const ImageT* s = (i == 0) ? source : from;
-      kernel<<<grid_dim, BLOCK_SIZE>>>(to, s, dims, this_radius);
+      vertical_box_blur_kernel<<<grid_dim, BLOCK_SIZE>>>(to, s, dims,
+                                                         this_radius);
       std::swap(to, from);
     }
   }
