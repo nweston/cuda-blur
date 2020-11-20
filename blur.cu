@@ -171,23 +171,20 @@ void box_blur(ImageT* dest, const ImageT* source, ImageT* temp, image_dims dims,
   }
 
   transpose(dest, temp, dims);
+  image_dims transpose_dims = {dims.height, dims.width, dims.channel_count,
+                               dims.sizeof_channel, dims.height};
 
   // Horizontal blur
   {
     // Transpose turns any horizontal padding into vertical padding. Ignore
     // those extra pixels when blurring.
-    image_dims transpose_dims = {dims.height, dims.width, dims.channel_count,
-                                 dims.sizeof_channel, dims.height};
     int grid_dim = n_blocks(transpose_dims.width, BLOCK_SIZE);
     vertical_box_blur_kernel<<<grid_dim, BLOCK_SIZE>>>(temp, dest,
                                                        transpose_dims, radius);
   }
 
-  // Transpose back to the original format. This version of the dims includes
-  // the extra height.
-  transpose(dest, temp,
-            {dims.height, dims.stride_pixels, dims.channel_count,
-             dims.sizeof_channel, dims.height});
+  // Transpose back to the original format.
+  transpose(dest, temp, transpose_dims);
 }
 
 // Blur an image with a repeated box blur.
