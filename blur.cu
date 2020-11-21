@@ -193,7 +193,7 @@ void box_blur(ImageT* dest, const ImageT* source, ImageT* temp, image_dims dims,
 // source image and want to save some memory).
 void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
                  image_dims dims, int radius, int n_passes,
-                 int outputs_per_thread = 1) {
+                 int outputs_per_thread_v = 1, int outputs_per_thread_h = 1) {
   const int BLOCK_SIZE = 128;
 
   // Each blur pass and transpose needs to read from one image and write to
@@ -205,7 +205,7 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
   // Vertical blur
   {
     int remaining = radius;
-    int grid_dim = n_blocks(dims.width, BLOCK_SIZE) / outputs_per_thread;
+    int grid_dim = n_blocks(dims.width, BLOCK_SIZE) / outputs_per_thread_v;
     for (int i = 0; i < n_passes; i++) {
       int this_radius = remaining / (n_passes - i);
       remaining -= this_radius;
@@ -227,7 +227,8 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
     // those extra pixels when blurring.
     image_dims transpose_dims = {dims.height, dims.width, dims.channel_count,
                                  dims.sizeof_channel, dims.height};
-    int grid_dim = n_blocks(transpose_dims.width, BLOCK_SIZE);
+    int grid_dim =
+        n_blocks(transpose_dims.width, BLOCK_SIZE) / outputs_per_thread_h;
     for (int i = 0; i < n_passes; i++) {
       int this_radius = remaining / (n_passes - i);
       remaining -= this_radius;
@@ -248,7 +249,8 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
 // Like smooth_blur, but use textures for horizontal blur
 void smooth_blur_texture(ImageT* dest, const ImageT* source, ImageT* temp,
                          image_dims dims, int radius, int n_passes,
-                         int outputs_per_thread = 1) {
+                         int outputs_per_thread_v = 1,
+                         int outputs_per_thread_h = 1) {
   const int BLOCK_SIZE = 128;
 
   // Each blur pass and transpose needs to read from one image and write to
@@ -260,7 +262,7 @@ void smooth_blur_texture(ImageT* dest, const ImageT* source, ImageT* temp,
   // Vertical blur
   {
     int remaining = radius;
-    int grid_dim = n_blocks(dims.width, BLOCK_SIZE) / outputs_per_thread;
+    int grid_dim = n_blocks(dims.width, BLOCK_SIZE) / outputs_per_thread_v;
     for (int i = 0; i < n_passes; i++) {
       int this_radius = remaining / (n_passes - i);
       remaining -= this_radius;
@@ -275,7 +277,7 @@ void smooth_blur_texture(ImageT* dest, const ImageT* source, ImageT* temp,
   // Horizontal blur
   {
     int remaining = radius;
-    int grid_dim = n_blocks(dims.height, BLOCK_SIZE) / outputs_per_thread;
+    int grid_dim = n_blocks(dims.height, BLOCK_SIZE) / outputs_per_thread_h;
     for (int i = 0; i < n_passes; i++) {
       int this_radius = remaining / (n_passes - i);
       remaining -= this_radius;

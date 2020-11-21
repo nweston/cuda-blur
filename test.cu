@@ -67,11 +67,15 @@ int main(int argc, char** argv) {
   auto dest = cuda_malloc_unique<float4>(allocated_bytes(dims));
   auto temp = cuda_malloc_unique<float4>(allocated_bytes(dims));
 
-  for (int outputs = 1; outputs <= 4; outputs++) {
-    timeit("smooth blur " + std::to_string(outputs), [&]() {
-      smooth_blur(dest.get(), source.get(), temp.get(), dims, radius, n_passes,
-                  outputs);
-    });
+  for (int outputs_v = 1; outputs_v <= 3; outputs_v++) {
+    for (int outputs_h = 1; outputs_h <= 3; outputs_h++) {
+      timeit("smooth blur " + std::to_string(outputs_v) +
+                 std::to_string(outputs_h),
+             [&]() {
+               smooth_blur(dest.get(), source.get(), temp.get(), dims, radius,
+                           n_passes, outputs_v, outputs_h);
+             });
+    }
   }
 
   if (do_texture) {
