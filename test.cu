@@ -51,6 +51,8 @@ void crop_image(float4* image, image_dims& dims) {
 
 const bool do_crop = false;
 const bool do_texture = false;
+const bool do_outputs = false;
+const bool do_column_split = false;
 
 int main(int argc, char** argv) {
   int radius = (argc > 3) ? std::stoi(argv[3]) : 5;
@@ -67,14 +69,16 @@ int main(int argc, char** argv) {
   auto dest = cuda_malloc_unique<float4>(allocated_bytes(dims));
   auto temp = cuda_malloc_unique<float4>(allocated_bytes(dims));
 
-  for (int outputs_v = 1; outputs_v <= 3; outputs_v++) {
-    for (int outputs_h = 1; outputs_h <= 3; outputs_h++) {
-      timeit("smooth blur " + std::to_string(outputs_v) +
-                 std::to_string(outputs_h),
-             [&]() {
-               smooth_blur(dest.get(), source.get(), temp.get(), dims, radius,
-                           n_passes, outputs_v, outputs_h);
-             });
+  if (do_outputs) {
+    for (int outputs_v = 1; outputs_v <= 3; outputs_v++) {
+      for (int outputs_h = 1; outputs_h <= 3; outputs_h++) {
+        timeit("outputs/thread " + std::to_string(outputs_v) +
+                   std::to_string(outputs_h),
+               [&]() {
+                 smooth_blur(dest.get(), source.get(), temp.get(), dims, radius,
+                             n_passes, outputs_v, outputs_h, 1, 2);
+               });
+      }
     }
   }
 
@@ -84,6 +88,25 @@ int main(int argc, char** argv) {
                           n_passes);
     });
   }
+
+  if (do_column_split) {
+    for (int threads_v = 1; threads_v <= 4; threads_v++) {
+      for (int threads_h = 1; threads_h <= 4; threads_h++) {
+        timeit("threads/column " + std::to_string(threads_v) +
+                   std::to_string(threads_h),
+               [&]() {
+                 smooth_blur(dest.get(), source.get(), temp.get(), dims, radius,
+                             n_passes, 1, 1, threads_v, threads_h);
+               });
+      }
+    }
+  }
+
+  // Current fastest configuration (at 1920x1080, radius 10)
+  timeit("fastest blur", [&]() {
+    smooth_blur(dest.get(), source.get(), temp.get(), dims, radius, n_passes, 3,
+                3, 1, 2);
+  });
 
   // Copy result back to host and write
   copy_image(pixels.get(), dest.get(), dims);

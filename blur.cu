@@ -92,20 +92,35 @@ void transpose(ImageT* dest, const ImageT* source, image_dims dims) {
 // ===== Blur functions =====
 __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
                                          image_dims dims, int radius) {
+  // Split each column into vertical slices
+  int n_slices = blockDim.y;
+  int slice_height = (dims.height + n_slices - 1) / n_slices;
+  int y_start = threadIdx.y * slice_height;
+  int y_limit = min(static_cast<int>(dims.height), y_start + slice_height);
+
   float scale = 1.0f / (2 * radius + 1);
 
   for (int x = cuda_index(); x < dims.width; x += blockDim.x * gridDim.x) {
+    TempT sum;
+
     // Fill initial box, repeating the edge pixel
-    TempT edge = source[pixel_index(dims, x, 0)];
-    TempT sum = edge * (radius + 1);
-    for (int y = 1; y < radius + 1; y++) {
-      sum += source[pixel_index(dims, x, y)];
+    if (y_start == 0) {
+      TempT edge = source[pixel_index(dims, x, 0)];
+      sum = edge * (radius + 1);
+      for (int y = 1; y < radius + 1; y++) {
+        sum += source[pixel_index(dims, x, y)];
+      }
+    } else {
+      sum = {0, 0, 0, 0};
+      for (int y = y_start - radius; y < y_start + radius + 1; y++) {
+        sum += source[pixel_index(dims, x, max(y, 0))];
+      }
     }
 
     // Compute result pixels
-    int top = -radius;
-    int bottom = radius;
-    for (int y = 0; y < dims.height; y++) {
+    int top = y_start - radius;
+    int bottom = y_start + radius;
+    for (int y = y_start; y < y_limit; y++) {
       dest[pixel_index(dims, x, y)] = sum * scale;
 
       // Shift the box
@@ -193,8 +208,9 @@ void box_blur(ImageT* dest, const ImageT* source, ImageT* temp, image_dims dims,
 // source image and want to save some memory).
 void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
                  image_dims dims, int radius, int n_passes,
-                 int outputs_per_thread_v = 1, int outputs_per_thread_h = 1) {
-  const int BLOCK_SIZE = 128;
+                 int outputs_per_thread_v = 1, int outputs_per_thread_h = 1,
+                 int threads_per_column_v = 1, int threads_per_column_h = 1) {
+  const int BLOCK_WIDTH = 128;
 
   // Each blur pass and transpose needs to read from one image and write to
   // another. To avoid any copying, we swap these pointers around after each
@@ -205,14 +221,15 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
   // Vertical blur
   {
     int remaining = radius;
-    int grid_dim = n_blocks(dims.width, BLOCK_SIZE) / outputs_per_thread_v;
+    dim3 block_dim(BLOCK_WIDTH, threads_per_column_v);
+    int grid_dim = n_blocks(dims.width, BLOCK_WIDTH) / outputs_per_thread_v;
     for (int i = 0; i < n_passes; i++) {
       int this_radius = remaining / (n_passes - i);
       remaining -= this_radius;
       // On the very first pass, read from the source image
       const ImageT* s = (i == 0) ? source : from;
-      vertical_box_blur_kernel<<<grid_dim, BLOCK_SIZE>>>(to, s, dims,
-                                                         this_radius);
+      vertical_box_blur_kernel<<<grid_dim, block_dim>>>(to, s, dims,
+                                                        this_radius);
       std::swap(to, from);
     }
   }
@@ -227,12 +244,13 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
     // those extra pixels when blurring.
     image_dims transpose_dims = {dims.height, dims.width, dims.channel_count,
                                  dims.sizeof_channel, dims.height};
+    dim3 block_dim(BLOCK_WIDTH, threads_per_column_h);
     int grid_dim =
-        n_blocks(transpose_dims.width, BLOCK_SIZE) / outputs_per_thread_h;
+        n_blocks(transpose_dims.width, BLOCK_WIDTH) / outputs_per_thread_h;
     for (int i = 0; i < n_passes; i++) {
       int this_radius = remaining / (n_passes - i);
       remaining -= this_radius;
-      vertical_box_blur_kernel<<<grid_dim, BLOCK_SIZE>>>(
+      vertical_box_blur_kernel<<<grid_dim, block_dim>>>(
           to, from, transpose_dims, this_radius);
       std::swap(to, from);
     }
