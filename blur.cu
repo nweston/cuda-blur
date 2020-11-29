@@ -164,6 +164,10 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
   ImageT* from = dest;
   ImageT* to = temp;
 
+  // Ensure that each pass will have radius >= 1. This speeds up small blurs
+  // by reducing the number of passes.
+  n_passes = std::min(n_passes, radius);
+
   // Vertical blur
   {
     int remaining = radius;
