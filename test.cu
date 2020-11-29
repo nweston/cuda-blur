@@ -50,7 +50,6 @@ void crop_image(float4* image, image_dims& dims) {
 }
 
 const bool do_crop = false;
-const bool do_texture = false;
 const bool do_outputs = false;
 const bool do_column_split = false;
 
@@ -80,13 +79,6 @@ int main(int argc, char** argv) {
                });
       }
     }
-  }
-
-  if (do_texture) {
-    timeit("texture blur", [&]() {
-      smooth_blur_texture(dest.get(), source.get(), temp.get(), dims, radius,
-                          n_passes);
-    });
   }
 
   if (do_column_split) {

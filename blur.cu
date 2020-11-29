@@ -45,28 +45,6 @@ __device__ static int cuda_index() {
   return blockIdx.x * blockDim.x + threadIdx.x;
 }
 
-static cudaTextureObject_t create_texture(const ImageT* source,
-                                          image_dims dims) {
-  cudaTextureDesc tex_desc = {};
-  tex_desc.addressMode[0] = cudaAddressModeClamp;
-  tex_desc.addressMode[1] = cudaAddressModeClamp;
-  tex_desc.filterMode = cudaFilterModePoint;
-  tex_desc.readMode = cudaReadModeElementType;
-  tex_desc.normalizedCoords = 0;
-
-  cudaResourceDesc resource_desc = {cudaResourceTypePitch2D};
-  resource_desc.res.pitch2D.devPtr = const_cast<ImageT*>(source);
-  resource_desc.res.pitch2D.desc = cudaCreateChannelDesc<ImageT>();
-  resource_desc.res.pitch2D.width = dims.width;
-  resource_desc.res.pitch2D.height = dims.height;
-  resource_desc.res.pitch2D.pitchInBytes = stride_bytes(dims);
-
-  cudaTextureObject_t tex = 0;
-  cudaCheckError(
-      cudaCreateTextureObject(&tex, &resource_desc, &tex_desc, nullptr));
-  return tex;
-}
-
 // ===== Transpose =====
 
 // Naive transpose
@@ -129,38 +107,6 @@ __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
       bottom++;
       sum += source[pixel_index(dims, x, min(bottom, int(dims.height - 1)))];
     }
-  }
-}
-
-// Horizontal box blur using texture. This is significantly slower (approx
-// 2x) than transposing and using the vertical blur.
-__global__ void horizontal_box_blur_kernel(ImageT* dest,
-                                           cudaTextureObject_t source,
-                                           image_dims dims, int radius) {
-  int y = cuda_index();
-  if (y >= dims.height)
-    return;
-
-  float scale = 1.0f / (2 * radius + 1);
-
-  // Fill initial box, repeating the edge pixel
-  TempT edge = tex2D<ImageT>(source, 0, y);
-  TempT sum = edge * (radius + 1);
-  for (int x = 1; x < radius + 1; x++) {
-    sum += tex2D<ImageT>(source, x, y);
-  }
-
-  // Compute result pixels
-  int left = -radius;
-  int right = radius;
-  for (int x = 0; x < dims.width; x++) {
-    dest[pixel_index(dims, x, y)] = sum * scale;
-
-    // Shift the box
-    sum -= tex2D<ImageT>(source, left, y);
-    left++;
-    right++;
-    sum += tex2D<ImageT>(source, right, y);
   }
 }
 
@@ -262,54 +208,4 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
             {dims.height, dims.stride_pixels, dims.channel_count,
              dims.sizeof_channel, dims.height});
   assert(to == dest);
-}
-
-// Like smooth_blur, but use textures for horizontal blur
-void smooth_blur_texture(ImageT* dest, const ImageT* source, ImageT* temp,
-                         image_dims dims, int radius, int n_passes,
-                         int outputs_per_thread_v = 1,
-                         int outputs_per_thread_h = 1) {
-  const int BLOCK_SIZE = 128;
-
-  // Each blur pass and transpose needs to read from one image and write to
-  // another. To avoid any copying, we swap these pointers around after each
-  // operation.
-  ImageT* from = dest;
-  ImageT* to = temp;
-
-  // Vertical blur
-  {
-    int remaining = radius;
-    int grid_dim = n_blocks(dims.width, BLOCK_SIZE) / outputs_per_thread_v;
-    for (int i = 0; i < n_passes; i++) {
-      int this_radius = remaining / (n_passes - i);
-      remaining -= this_radius;
-      // On the very first pass, read from the source image
-      const ImageT* s = (i == 0) ? source : from;
-      vertical_box_blur_kernel<<<grid_dim, BLOCK_SIZE>>>(to, s, dims,
-                                                         this_radius);
-      std::swap(to, from);
-    }
-  }
-
-  // Horizontal blur
-  {
-    int remaining = radius;
-    int grid_dim = n_blocks(dims.height, BLOCK_SIZE) / outputs_per_thread_h;
-    for (int i = 0; i < n_passes; i++) {
-      int this_radius = remaining / (n_passes - i);
-      remaining -= this_radius;
-
-      if (false) {
-        cudaMemcpy(to, from, allocated_bytes(dims), cudaMemcpyDefault);
-      } else {
-        auto tex = create_texture(from, dims);
-        horizontal_box_blur_kernel<<<grid_dim, BLOCK_SIZE>>>(to, tex, dims,
-                                                             this_radius);
-        cudaCheckError(cudaDestroyTextureObject(tex));
-      }
-
-      std::swap(to, from);
-    }
-  }
 }
