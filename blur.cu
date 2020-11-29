@@ -41,8 +41,12 @@ using ImageT = float4;
 // when ImageT is half-float.
 using TempT = float4;
 
-__device__ static int cuda_index() {
+__device__ static int cuda_index_x() {
   return blockIdx.x * blockDim.x + threadIdx.x;
+}
+
+__device__ static int cuda_index_y() {
+  return blockIdx.y * blockDim.y + threadIdx.y;
 }
 
 // ===== Transpose =====
@@ -78,7 +82,7 @@ __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
 
   float scale = 1.0f / (2 * radius + 1);
 
-  for (int x = cuda_index(); x < dims.width; x += blockDim.x * gridDim.x) {
+  for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
     TempT sum;
 
     // Fill initial box, repeating the edge pixel
@@ -107,6 +111,48 @@ __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
       bottom++;
       sum += source[pixel_index(dims, x, min(bottom, int(dims.height - 1)))];
     }
+  }
+}
+
+// Vertical box blur, implemented by direct convolution instead of sliding
+// window method.
+__global__ void vertical_direct_box_blur_kernel(ImageT* dest,
+                                                const ImageT* source,
+                                                image_dims dims, int radius) {
+  int y = cuda_index_y();
+  float scale = 1.0f / (2 * radius + 1);
+
+  for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
+    TempT sum = source[pixel_index(dims, x, y)];
+    for (int yi = y - radius; yi < y; yi++) {
+      sum += source[pixel_index(dims, x, max(yi, 0))];
+    }
+    for (int yi = y + 1; yi < y + radius + 1; yi++) {
+      sum += source[pixel_index(dims, x, min(yi, int(dims.height - 1)))];
+    }
+
+    dest[pixel_index(dims, x, y)] = sum * scale;
+  }
+}
+
+// Horizontal box blur, implemented by direct convolution instead of sliding
+// window method.
+__global__ void horizontal_direct_box_blur_kernel(ImageT* dest,
+                                                  const ImageT* source,
+                                                  image_dims dims, int radius) {
+  int y = cuda_index_y();
+  float scale = 1.0f / (2 * radius + 1);
+
+  for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
+    TempT sum = source[pixel_index(dims, x, y)];
+    for (int xi = x - radius; xi < x; xi++) {
+      sum += source[pixel_index(dims, max(xi, 0), y)];
+    }
+    for (int xi = x + 1; xi < x + radius + 1; xi++) {
+      sum += source[pixel_index(dims, min(xi, int(dims.width - 1)), y)];
+    }
+
+    dest[pixel_index(dims, x, y)] = sum * scale;
   }
 }
 
@@ -212,4 +258,179 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
             {dims.height, dims.stride_pixels, dims.channel_count,
              dims.sizeof_channel, dims.height});
   assert(to == dest);
+}
+
+// Use vertical box blurs with direct convolution
+void direct_blur_vertical(ImageT* dest, const ImageT* source, ImageT* temp,
+                          image_dims dims, int radius, int n_passes,
+                          int outputs_per_thread = 1) {
+  dim3 BLOCK_DIM(16, 8);
+
+  // Each blur pass and transpose needs to read from one image and write to
+  // another. To avoid any copying, we swap these pointers around after each
+  // operation.
+  ImageT* from = dest;
+  ImageT* to = temp;
+
+  // Ensure that each pass will have radius >= 1. This speeds up small blurs
+  // by reducing the number of passes.
+  n_passes = std::min(n_passes, radius);
+
+  // Vertical blur
+  {
+    int remaining = radius;
+    dim3 grid_dim(n_blocks(dims.width, BLOCK_DIM.x) / outputs_per_thread,
+                  n_blocks(dims.height, BLOCK_DIM.y));
+    for (int i = 0; i < n_passes; i++) {
+      int this_radius = remaining / (n_passes - i);
+      remaining -= this_radius;
+      // On the very first pass, read from the source image
+      const ImageT* s = (i == 0) ? source : from;
+      vertical_direct_box_blur_kernel<<<grid_dim, BLOCK_DIM>>>(to, s, dims,
+                                                               this_radius);
+      std::swap(to, from);
+    }
+  }
+
+  transpose(to, from, dims);
+  std::swap(to, from);
+
+  // Horizontal blur
+  {
+    int remaining = radius;
+    // Transpose turns any horizontal padding into vertical padding. Ignore
+    // those extra pixels when blurring.
+    image_dims transpose_dims = {dims.height, dims.width, dims.channel_count,
+                                 dims.sizeof_channel, dims.height};
+    dim3 grid_dim(
+        n_blocks(transpose_dims.width, BLOCK_DIM.x) / outputs_per_thread,
+        n_blocks(transpose_dims.height, BLOCK_DIM.y));
+
+    for (int i = 0; i < n_passes; i++) {
+      int this_radius = remaining / (n_passes - i);
+      remaining -= this_radius;
+      vertical_direct_box_blur_kernel<<<grid_dim, BLOCK_DIM>>>(
+          to, from, transpose_dims, this_radius);
+      std::swap(to, from);
+    }
+  }
+
+  // Transpose back to the original format. This version of the dims includes
+  // the extra height.
+  transpose(to, from,
+            {dims.height, dims.stride_pixels, dims.channel_count,
+             dims.sizeof_channel, dims.height});
+  assert(to == dest);
+}
+
+// Use horizontal box blurs with direct convolution
+void direct_blur_horizontal(ImageT* dest, const ImageT* source, ImageT* temp,
+                            image_dims dims, int radius, int n_passes,
+                            int outputs_per_thread = 1) {
+  dim3 BLOCK_DIM(16, 8);
+
+  // Each blur pass and transpose needs to read from one image and write to
+  // another. To avoid any copying, we swap these pointers around after each
+  // operation.
+  ImageT* from = dest;
+  ImageT* to = temp;
+
+  // Ensure that each pass will have radius >= 1. This speeds up small blurs
+  // by reducing the number of passes.
+  n_passes = std::min(n_passes, radius);
+
+  // Horizontal blur
+  {
+    int remaining = radius;
+    dim3 grid_dim(n_blocks(dims.width, BLOCK_DIM.x) / outputs_per_thread,
+                  n_blocks(dims.height, BLOCK_DIM.y));
+    for (int i = 0; i < n_passes; i++) {
+      int this_radius = remaining / (n_passes - i);
+      remaining -= this_radius;
+      // On the very first pass, read from the source image
+      const ImageT* s = (i == 0) ? source : from;
+      horizontal_direct_box_blur_kernel<<<grid_dim, BLOCK_DIM>>>(to, s, dims,
+                                                                 this_radius);
+      std::swap(to, from);
+    }
+  }
+
+  transpose(to, from, dims);
+  std::swap(to, from);
+
+  // Vertical blur
+  {
+    int remaining = radius;
+    // Transpose turns any horizontal padding into vertical padding. Ignore
+    // those extra pixels when blurring.
+    image_dims transpose_dims = {dims.height, dims.width, dims.channel_count,
+                                 dims.sizeof_channel, dims.height};
+    dim3 grid_dim(
+        n_blocks(transpose_dims.width, BLOCK_DIM.x) / outputs_per_thread,
+        n_blocks(transpose_dims.height, BLOCK_DIM.y));
+
+    for (int i = 0; i < n_passes; i++) {
+      int this_radius = remaining / (n_passes - i);
+      remaining -= this_radius;
+      horizontal_direct_box_blur_kernel<<<grid_dim, BLOCK_DIM>>>(
+          to, from, transpose_dims, this_radius);
+      std::swap(to, from);
+    }
+  }
+
+  // Transpose back to the original format. This version of the dims includes
+  // the extra height.
+  transpose(to, from,
+            {dims.height, dims.stride_pixels, dims.channel_count,
+             dims.sizeof_channel, dims.height});
+  assert(to == dest);
+}
+
+// Use horizontal and vertical direct blur kernels, without transposing.
+void direct_blur_no_transpose(ImageT* dest, const ImageT* source, ImageT* temp,
+                              image_dims dims, int radius, int n_passes,
+                              int outputs_per_thread = 1) {
+  dim3 BLOCK_DIM(16, 8);
+
+  // Each blur pass and transpose needs to read from one image and write to
+  // another. To avoid any copying, we swap these pointers around after each
+  // operation.
+  ImageT* from = dest;
+  ImageT* to = temp;
+
+  // Ensure that each pass will have radius >= 1. This speeds up small blurs
+  // by reducing the number of passes.
+  n_passes = std::min(n_passes, radius);
+
+  dim3 grid_dim(n_blocks(dims.width, BLOCK_DIM.x) / outputs_per_thread,
+                n_blocks(dims.height, BLOCK_DIM.y));
+
+  // Horizontal blur
+  {
+    int remaining = radius;
+    for (int i = 0; i < n_passes; i++) {
+      int this_radius = remaining / (n_passes - i);
+      remaining -= this_radius;
+      // On the very first pass, read from the source image
+      const ImageT* s = (i == 0) ? source : from;
+      horizontal_direct_box_blur_kernel<<<grid_dim, BLOCK_DIM>>>(to, s, dims,
+                                                                 this_radius);
+      std::swap(to, from);
+    }
+  }
+
+  // Vertical blur
+  {
+    int remaining = radius;
+
+    for (int i = 0; i < n_passes; i++) {
+      int this_radius = remaining / (n_passes - i);
+      remaining -= this_radius;
+      vertical_direct_box_blur_kernel<<<grid_dim, BLOCK_DIM>>>(to, from, dims,
+                                                               this_radius);
+      std::swap(to, from);
+    }
+  }
+
+  assert(from == dest);
 }

@@ -83,6 +83,7 @@ const bool do_crop = false;
 const bool do_outputs = false;
 const bool do_column_split = false;
 const bool do_npp = false;
+const bool do_direct = false;
 
 int main(int argc, char** argv) {
   int radius = (argc > 3) ? std::stoi(argv[3]) : 5;
@@ -129,6 +130,23 @@ int main(int argc, char** argv) {
     timeit("npp blur", [&]() {
       npp_blur(dest.get(), source.get(), temp.get(), dims, radius, n_passes);
     });
+  }
+
+  if (do_direct) {
+    for (int outputs = 2; outputs <= 3; outputs++) {
+      timeit("direct blur x" + std::to_string(outputs), [&]() {
+        direct_blur_horizontal(dest.get(), source.get(), temp.get(), dims,
+                               radius, n_passes, outputs);
+      });
+      timeit("direct blur y" + std::to_string(outputs), [&]() {
+        direct_blur_vertical(dest.get(), source.get(), temp.get(), dims, radius,
+                             n_passes, outputs);
+      });
+      timeit("no transpose" + std::to_string(outputs), [&]() {
+        direct_blur_no_transpose(dest.get(), source.get(), temp.get(), dims,
+                                 radius, n_passes, outputs);
+      });
+    }
   }
 
   // Current fastest configuration (at 1920x1080, radius 10)
