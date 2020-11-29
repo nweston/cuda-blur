@@ -6,9 +6,12 @@ OPENEXR_LIBS = -lIlmImf-2_5 -lImath-2_5 -lHalf-2_5 -lIex-2_5 -lIexMath-2_5 -lIlm
 # triggers warnings.
 WFLAGS =  -Werror -Wall -Wno-error=unused-function
 
+NPP_LIBS = -lnppig_static -lnppif_static -lnppc_static -lculibos
+
 EXRPATH = /usr/local/openexr-2.5.2
 NVCCFLAGS = --compiler-options="$(WFLAGS)" -std=c++17 -g
-LINKFLAGS = -L${CUDAPATH}/lib64 -L$(EXRPATH)/lib -pthread -lcuda -lcudart_static -ldl -lrt
+LINKFLAGS = -L${CUDAPATH}/lib64 -L$(EXRPATH)/lib -pthread -lcuda -lcudart_static -ldl -lrt \
+	${NPP_LIBS}
 CXXFLAGS = -std=c++17 $(WFLAGS) -Wpedantic -I$(EXRPATH)/include -I${CUDAPATH}/include -g
 
 blur-test: test.o exr.o

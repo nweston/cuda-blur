@@ -1,5 +1,6 @@
 #include "cuda_half.h"
 
+#include <nppi_filtering_functions.h>
 #include <memory>
 #include <string>
 #include <utility>
@@ -49,9 +50,39 @@ void crop_image(float4* image, image_dims& dims) {
   }
 }
 
+static void npp_blur(float4* dest, const float4* source, float4* temp,
+                     image_dims dims, int radius, int n_passes) {
+  auto* from = reinterpret_cast<Npp32f*>(temp);
+  auto* to = reinterpret_cast<Npp32f*>(dest);
+
+  NppiSize size = {static_cast<int>(dims.width), static_cast<int>(dims.height)};
+
+  int remaining = radius;
+  for (int i = 0; i < n_passes; i++) {
+    int this_radius = remaining / (n_passes - i);
+    remaining -= this_radius;
+    int width = 2 * this_radius + 1;
+
+    // On the first pass, read from the source image
+    const auto* s = (i == 0) ? reinterpret_cast<const Npp32f*>(source) : from;
+
+    size_t line_bytes = stride_bytes(dims);
+    nppiFilterBoxBorder_32f_C4R(s, line_bytes,               //
+                                size, {0, 0},                //
+                                to, line_bytes, size,        //
+                                {width, width},              // filter size
+                                {this_radius, this_radius},  // center
+                                NPP_BORDER_REPLICATE);
+    std::swap(to, from);
+  }
+
+  // FIXME: this will only work for odd numbers of passes
+}
+
 const bool do_crop = false;
 const bool do_outputs = false;
 const bool do_column_split = false;
+const bool do_npp = false;
 
 int main(int argc, char** argv) {
   int radius = (argc > 3) ? std::stoi(argv[3]) : 5;
@@ -92,6 +123,12 @@ int main(int argc, char** argv) {
                });
       }
     }
+  }
+
+  if (do_npp) {
+    timeit("npp blur", [&]() {
+      npp_blur(dest.get(), source.get(), temp.get(), dims, radius, n_passes);
+    });
   }
 
   // Current fastest configuration (at 1920x1080, radius 10)
