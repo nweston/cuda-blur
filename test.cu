@@ -84,6 +84,7 @@ const bool do_outputs = false;
 const bool do_column_split = false;
 const bool do_npp = false;
 const bool do_direct = false;
+const bool do_gaussian = false;
 
 int main(int argc, char** argv) {
   int radius = (argc > 3) ? std::stoi(argv[3]) : 5;
@@ -147,6 +148,13 @@ int main(int argc, char** argv) {
                                  radius, n_passes, outputs);
       });
     }
+  }
+
+  if (do_gaussian) {
+    timeit("gaussian", [&]() {
+      direct_gaussian_blur(dest.get(), source.get(), temp.get(), dims, radius,
+                           2);
+    });
   }
 
   // Current fastest configuration (at 1920x1080, radius 10)

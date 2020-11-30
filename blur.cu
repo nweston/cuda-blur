@@ -156,6 +156,60 @@ __global__ void horizontal_direct_box_blur_kernel(ImageT* dest,
   }
 }
 
+__global__ void horizontal_direct_gaussian_blur_kernel(ImageT* dest,
+                                                       const ImageT* source,
+                                                       image_dims dims,
+                                                       int radius) {
+  int y = cuda_index_y();
+  float sigma = radius / 2.57f;
+
+  for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
+    float wsum = 1.0f;
+    TempT sum = source[pixel_index(dims, x, y)];
+    for (int xi = x - radius; xi < x; xi++) {
+      float dx = x - xi;
+      float w = expf(-1 * dx * dx / (2 * sigma * sigma));
+      wsum += w;
+      sum += source[pixel_index(dims, max(xi, 0), y)] * w;
+    }
+    for (int xi = x + 1; xi < x + radius + 1; xi++) {
+      float dx = xi - x;
+      float w = expf(-1 * dx * dx / (2 * sigma * sigma));
+      wsum += w;
+      sum += source[pixel_index(dims, min(xi, int(dims.width - 1)), y)] * w;
+    }
+
+    dest[pixel_index(dims, x, y)] = sum * (1.0f / wsum);
+  }
+}
+
+__global__ void vertical_direct_gaussian_blur_kernel(ImageT* dest,
+                                                     const ImageT* source,
+                                                     image_dims dims,
+                                                     int radius) {
+  int y = cuda_index_y();
+  float sigma = radius / 2.57f;
+
+  for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
+    float wsum = 1.0f;
+    TempT sum = source[pixel_index(dims, x, y)];
+    for (int yi = y - radius; yi < y; yi++) {
+      float dy = y - yi;
+      float w = expf(-1 * dy * dy / (2 * sigma * sigma));
+      wsum += w;
+      sum += source[pixel_index(dims, x, max(yi, 0))] * w;
+    }
+    for (int yi = y + 1; yi < y + radius + 1; yi++) {
+      float dy = yi - y;
+      float w = expf(-1 * dy * dy / (2 * sigma * sigma));
+      wsum += w;
+      sum += source[pixel_index(dims, x, min(yi, int(dims.height - 1)))] * w;
+    }
+
+    dest[pixel_index(dims, x, y)] = sum * (1.0f / wsum);
+  }
+}
+
 void vertical_box_blur(ImageT* dest, const ImageT* source, image_dims dims,
                        int radius) {
   const int BLOCK_SIZE = 128;
@@ -433,4 +487,18 @@ void direct_blur_no_transpose(ImageT* dest, const ImageT* source, ImageT* temp,
   }
 
   assert(from == dest);
+}
+
+// Gaussian blur in a single pass, by direct convolution.
+void direct_gaussian_blur(ImageT* dest, const ImageT* source, ImageT* temp,
+                          image_dims dims, int radius,
+                          int outputs_per_thread = 1) {
+  dim3 BLOCK_DIM(16, 8);
+  dim3 grid_dim(n_blocks(dims.width, BLOCK_DIM.x) / outputs_per_thread,
+                n_blocks(dims.height, BLOCK_DIM.y));
+
+  horizontal_direct_gaussian_blur_kernel<<<grid_dim, BLOCK_DIM>>>(temp, source,
+                                                                  dims, radius);
+  vertical_direct_gaussian_blur_kernel<<<grid_dim, BLOCK_DIM>>>(dest, temp,
+                                                                dims, radius);
 }
