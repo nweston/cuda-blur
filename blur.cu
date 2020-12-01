@@ -157,60 +157,6 @@ __global__ void horizontal_direct_box_blur_kernel(ImageT* dest,
 }
 
 #include "weights.h"
-__global__ void horizontal_direct_gaussian_blur_kernel(ImageT* dest,
-                                                       const ImageT* source,
-                                                       image_dims dims,
-                                                       int radius) {
-  int y = cuda_index_y();
-  float sigma = radius / 2.57f;
-
-  for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    float wsum = 1.0f;
-    TempT sum = source[pixel_index(dims, x, y)];
-    for (int xi = x - radius; xi < x; xi++) {
-      float dx = x - xi;
-      float w = expf(-1 * dx * dx / (2 * sigma * sigma));
-      wsum += w;
-      sum += source[pixel_index(dims, max(xi, 0), y)] * w;
-    }
-    for (int xi = x + 1; xi < x + radius + 1; xi++) {
-      float dx = xi - x;
-      float w = expf(-1 * dx * dx / (2 * sigma * sigma));
-      wsum += w;
-      sum += source[pixel_index(dims, min(xi, int(dims.width - 1)), y)] * w;
-    }
-
-    dest[pixel_index(dims, x, y)] = sum * (1.0f / wsum);
-  }
-}
-
-__global__ void vertical_direct_gaussian_blur_kernel(ImageT* dest,
-                                                     const ImageT* source,
-                                                     image_dims dims,
-                                                     int radius) {
-  int y = cuda_index_y();
-  float sigma = radius / 2.57f;
-
-  for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    float wsum = 1.0f;
-    TempT sum = source[pixel_index(dims, x, y)];
-    for (int yi = y - radius; yi < y; yi++) {
-      float dy = y - yi;
-      float w = expf(-1 * dy * dy / (2 * sigma * sigma));
-      wsum += w;
-      sum += source[pixel_index(dims, x, max(yi, 0))] * w;
-    }
-    for (int yi = y + 1; yi < y + radius + 1; yi++) {
-      float dy = yi - y;
-      float w = expf(-1 * dy * dy / (2 * sigma * sigma));
-      wsum += w;
-      sum += source[pixel_index(dims, x, min(yi, int(dims.height - 1)))] * w;
-    }
-
-    dest[pixel_index(dims, x, y)] = sum * (1.0f / wsum);
-  }
-}
-
 
 __global__ void horizontal_precomputed_gaussian_blur_kernel(
     ImageT* dest, const ImageT* source, image_dims dims, int radius) {
@@ -254,42 +200,6 @@ __global__ void vertical_precomputed_gaussian_blur_kernel(ImageT* dest,
 
     dest[pixel_index(dims, x, y)] = sum;
   }
-}
-
-void vertical_box_blur(ImageT* dest, const ImageT* source, image_dims dims,
-                       int radius) {
-  const int BLOCK_SIZE = 128;
-  int grid_dim = n_blocks(dims.width, BLOCK_SIZE);
-  vertical_box_blur_kernel<<<grid_dim, BLOCK_SIZE>>>(dest, source, dims,
-                                                     radius);
-}
-
-void box_blur(ImageT* dest, const ImageT* source, ImageT* temp, image_dims dims,
-              int radius) {
-  const int BLOCK_SIZE = 128;
-
-  // Vertical blur
-  {
-    int grid_dim = n_blocks(dims.width, BLOCK_SIZE);
-    vertical_box_blur_kernel<<<grid_dim, BLOCK_SIZE>>>(temp, source, dims,
-                                                       radius);
-  }
-
-  transpose(dest, temp, dims);
-  image_dims transpose_dims = {dims.height, dims.width, dims.channel_count,
-                               dims.sizeof_channel, dims.height};
-
-  // Horizontal blur
-  {
-    // Transpose turns any horizontal padding into vertical padding. Ignore
-    // those extra pixels when blurring.
-    int grid_dim = n_blocks(transpose_dims.width, BLOCK_SIZE);
-    vertical_box_blur_kernel<<<grid_dim, BLOCK_SIZE>>>(temp, dest,
-                                                       transpose_dims, radius);
-  }
-
-  // Transpose back to the original format.
-  transpose(dest, temp, transpose_dims);
 }
 
 // Blur an image with a repeated box blur.
@@ -360,132 +270,6 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
   assert(to == dest);
 }
 
-// Use vertical box blurs with direct convolution
-void direct_blur_vertical(ImageT* dest, const ImageT* source, ImageT* temp,
-                          image_dims dims, int radius, int n_passes,
-                          int outputs_per_thread = 1) {
-  dim3 BLOCK_DIM(16, 8);
-
-  // Each blur pass and transpose needs to read from one image and write to
-  // another. To avoid any copying, we swap these pointers around after each
-  // operation.
-  ImageT* from = dest;
-  ImageT* to = temp;
-
-  // Ensure that each pass will have radius >= 1. This speeds up small blurs
-  // by reducing the number of passes.
-  n_passes = std::min(n_passes, radius);
-
-  // Vertical blur
-  {
-    int remaining = radius;
-    dim3 grid_dim(n_blocks(dims.width, BLOCK_DIM.x) / outputs_per_thread,
-                  n_blocks(dims.height, BLOCK_DIM.y));
-    for (int i = 0; i < n_passes; i++) {
-      int this_radius = remaining / (n_passes - i);
-      remaining -= this_radius;
-      // On the very first pass, read from the source image
-      const ImageT* s = (i == 0) ? source : from;
-      vertical_direct_box_blur_kernel<<<grid_dim, BLOCK_DIM>>>(to, s, dims,
-                                                               this_radius);
-      std::swap(to, from);
-    }
-  }
-
-  transpose(to, from, dims);
-  std::swap(to, from);
-
-  // Horizontal blur
-  {
-    int remaining = radius;
-    // Transpose turns any horizontal padding into vertical padding. Ignore
-    // those extra pixels when blurring.
-    image_dims transpose_dims = {dims.height, dims.width, dims.channel_count,
-                                 dims.sizeof_channel, dims.height};
-    dim3 grid_dim(
-        n_blocks(transpose_dims.width, BLOCK_DIM.x) / outputs_per_thread,
-        n_blocks(transpose_dims.height, BLOCK_DIM.y));
-
-    for (int i = 0; i < n_passes; i++) {
-      int this_radius = remaining / (n_passes - i);
-      remaining -= this_radius;
-      vertical_direct_box_blur_kernel<<<grid_dim, BLOCK_DIM>>>(
-          to, from, transpose_dims, this_radius);
-      std::swap(to, from);
-    }
-  }
-
-  // Transpose back to the original format. This version of the dims includes
-  // the extra height.
-  transpose(to, from,
-            {dims.height, dims.stride_pixels, dims.channel_count,
-             dims.sizeof_channel, dims.height});
-  assert(to == dest);
-}
-
-// Use horizontal box blurs with direct convolution
-void direct_blur_horizontal(ImageT* dest, const ImageT* source, ImageT* temp,
-                            image_dims dims, int radius, int n_passes,
-                            int outputs_per_thread = 1) {
-  dim3 BLOCK_DIM(16, 8);
-
-  // Each blur pass and transpose needs to read from one image and write to
-  // another. To avoid any copying, we swap these pointers around after each
-  // operation.
-  ImageT* from = dest;
-  ImageT* to = temp;
-
-  // Ensure that each pass will have radius >= 1. This speeds up small blurs
-  // by reducing the number of passes.
-  n_passes = std::min(n_passes, radius);
-
-  // Horizontal blur
-  {
-    int remaining = radius;
-    dim3 grid_dim(n_blocks(dims.width, BLOCK_DIM.x) / outputs_per_thread,
-                  n_blocks(dims.height, BLOCK_DIM.y));
-    for (int i = 0; i < n_passes; i++) {
-      int this_radius = remaining / (n_passes - i);
-      remaining -= this_radius;
-      // On the very first pass, read from the source image
-      const ImageT* s = (i == 0) ? source : from;
-      horizontal_direct_box_blur_kernel<<<grid_dim, BLOCK_DIM>>>(to, s, dims,
-                                                                 this_radius);
-      std::swap(to, from);
-    }
-  }
-
-  transpose(to, from, dims);
-  std::swap(to, from);
-
-  // Vertical blur
-  {
-    int remaining = radius;
-    // Transpose turns any horizontal padding into vertical padding. Ignore
-    // those extra pixels when blurring.
-    image_dims transpose_dims = {dims.height, dims.width, dims.channel_count,
-                                 dims.sizeof_channel, dims.height};
-    dim3 grid_dim(
-        n_blocks(transpose_dims.width, BLOCK_DIM.x) / outputs_per_thread,
-        n_blocks(transpose_dims.height, BLOCK_DIM.y));
-
-    for (int i = 0; i < n_passes; i++) {
-      int this_radius = remaining / (n_passes - i);
-      remaining -= this_radius;
-      horizontal_direct_box_blur_kernel<<<grid_dim, BLOCK_DIM>>>(
-          to, from, transpose_dims, this_radius);
-      std::swap(to, from);
-    }
-  }
-
-  // Transpose back to the original format. This version of the dims includes
-  // the extra height.
-  transpose(to, from,
-            {dims.height, dims.stride_pixels, dims.channel_count,
-             dims.sizeof_channel, dims.height});
-  assert(to == dest);
-}
-
 // Use horizontal and vertical direct blur kernels, without transposing.
 void direct_blur_no_transpose(ImageT* dest, const ImageT* source, ImageT* temp,
                               image_dims dims, int radius, int n_passes,
@@ -533,20 +317,6 @@ void direct_blur_no_transpose(ImageT* dest, const ImageT* source, ImageT* temp,
   }
 
   assert(from == dest);
-}
-
-// Gaussian blur in a single pass, by direct convolution.
-void direct_gaussian_blur(ImageT* dest, const ImageT* source, ImageT* temp,
-                          image_dims dims, int radius,
-                          int outputs_per_thread = 1) {
-  dim3 BLOCK_DIM(16, 8);
-  dim3 grid_dim(n_blocks(dims.width, BLOCK_DIM.x) / outputs_per_thread,
-                n_blocks(dims.height, BLOCK_DIM.y));
-
-  horizontal_direct_gaussian_blur_kernel<<<grid_dim, BLOCK_DIM>>>(temp, source,
-                                                                  dims, radius);
-  vertical_direct_gaussian_blur_kernel<<<grid_dim, BLOCK_DIM>>>(dest, temp,
-                                                                dims, radius);
 }
 
 void precomputed_gaussian_blur(ImageT* dest, const ImageT* source, ImageT* temp,

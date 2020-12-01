@@ -251,15 +251,7 @@ int main(int argc, char** argv) {
 
   if (do_direct) {
     for (int outputs = 2; outputs <= 3; outputs++) {
-      timeit("direct blur x" + std::to_string(outputs), [&]() {
-        direct_blur_horizontal(dest.get(), source.get(), temp.get(), dims,
-                               radius, n_passes, outputs);
-      });
-      timeit("direct blur y" + std::to_string(outputs), [&]() {
-        direct_blur_vertical(dest.get(), source.get(), temp.get(), dims, radius,
-                             n_passes, outputs);
-      });
-      timeit("no transpose" + std::to_string(outputs), [&]() {
+      timeit("direct" + std::to_string(outputs), [&]() {
         direct_blur_no_transpose(dest.get(), source.get(), temp.get(), dims,
                                  radius, n_passes, outputs);
       });
