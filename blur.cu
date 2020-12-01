@@ -13,8 +13,9 @@ void handleCudaError(const char* file, int line, const char* error) {
   std::cerr << "CUDA failure " << file << ":" << line << " " << error << "\n";
 }
 
-static int n_blocks(int threads, int block_size) {
-  return (threads + block_size - 1) / block_size;
+static int n_blocks(int threads, int block_size, int outputs_per_thread = 1) {
+  int block_outputs = block_size * outputs_per_thread;
+  return (threads + block_outputs - 1) / block_outputs;
 }
 
 // ===== Operators for built-in vector types =====
@@ -228,7 +229,7 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
   {
     int remaining = radius;
     dim3 block_dim(BLOCK_WIDTH, threads_per_column_v);
-    int grid_dim = n_blocks(dims.width, BLOCK_WIDTH) / outputs_per_thread_v;
+    int grid_dim = n_blocks(dims.width, BLOCK_WIDTH, outputs_per_thread_v);
     for (int i = 0; i < n_passes; i++) {
       int this_radius = remaining / (n_passes - i);
       remaining -= this_radius;
@@ -252,7 +253,7 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
                                  dims.sizeof_channel, dims.height};
     dim3 block_dim(BLOCK_WIDTH, threads_per_column_h);
     int grid_dim =
-        n_blocks(transpose_dims.width, BLOCK_WIDTH) / outputs_per_thread_h;
+        n_blocks(transpose_dims.width, BLOCK_WIDTH, outputs_per_thread_h);
     for (int i = 0; i < n_passes; i++) {
       int this_radius = remaining / (n_passes - i);
       remaining -= this_radius;
@@ -286,7 +287,7 @@ void direct_blur_no_transpose(ImageT* dest, const ImageT* source, ImageT* temp,
   // by reducing the number of passes.
   n_passes = std::min(n_passes, radius);
 
-  dim3 grid_dim(n_blocks(dims.width, BLOCK_DIM.x) / outputs_per_thread,
+  dim3 grid_dim(n_blocks(dims.width, BLOCK_DIM.x, outputs_per_thread),
                 n_blocks(dims.height, BLOCK_DIM.y));
 
   // Horizontal blur
@@ -323,7 +324,7 @@ void precomputed_gaussian_blur(ImageT* dest, const ImageT* source, ImageT* temp,
                                image_dims dims, int radius,
                                int outputs_per_thread = 1) {
   dim3 BLOCK_DIM(16, 8);
-  dim3 grid_dim(n_blocks(dims.width, BLOCK_DIM.x) / outputs_per_thread,
+  dim3 grid_dim(n_blocks(dims.width, BLOCK_DIM.x, outputs_per_thread),
                 n_blocks(dims.height, BLOCK_DIM.y));
 
   assert(radius <= MAX_PRECOMPUTED_RADIUS);
