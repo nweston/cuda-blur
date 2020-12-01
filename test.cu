@@ -84,7 +84,7 @@ const bool do_outputs = false;
 const bool do_column_split = false;
 const bool do_npp = false;
 const bool do_direct = false;
-const bool do_gaussian = false;
+const bool do_gaussian = true;
 
 int main(int argc, char** argv) {
   int radius = (argc > 3) ? std::stoi(argv[3]) : 5;
@@ -152,8 +152,8 @@ int main(int argc, char** argv) {
 
   if (do_gaussian) {
     timeit("gaussian", [&]() {
-      direct_gaussian_blur(dest.get(), source.get(), temp.get(), dims, radius,
-                           2);
+      precomputed_gaussian_blur(dest.get(), source.get(), temp.get(), dims,
+                                radius, 2);
     });
   }
 

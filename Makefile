@@ -17,10 +17,13 @@ CXXFLAGS = -std=c++17 $(WFLAGS) -Wpedantic -I$(EXRPATH)/include -I${CUDAPATH}/in
 blur-test: test.o exr.o
 	$(CXX) $^ -o $@ $(LINKFLAGS) $(OPENEXR_LIBS)
 
-exr.o: exr.cxx
+compute-weights: compute-weights.o
+	$(CXX) $^ -o $@
+
+%.o: %.cxx
 	$(CXX) -c $< $(CXXFLAGS)
 
-test.o: test.cu blur.cu timer.h image.h
+test.o: test.cu blur.cu timer.h image.h weights.h
 	$(NVCC) -c $< $(NVCCFLAGS)
 
 clean:
