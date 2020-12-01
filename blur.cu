@@ -19,6 +19,8 @@ static int n_blocks(int threads, int block_size, int outputs_per_thread = 1) {
 }
 
 // ===== Operators for built-in vector types =====
+
+/// float4 ///
 __device__ static float4 operator*(const float4& a, const float b) {
   return {a.x * b, a.y * b, a.z * b, a.w * b};
 }
@@ -33,14 +35,46 @@ __device__ static float4& operator-=(float4& a, const float4& b) {
   return a;
 }
 
+/// float2 ///
+__device__ static float2 operator*(const float2& a, const float b) {
+  return {a.x * b, a.y * b};
+}
+
+__device__ static float2& operator+=(float2& a, const float2& b) {
+  a = {a.x + b.x, a.y + b.y};
+  return a;
+}
+
+__device__ static float2& operator-=(float2& a, const float2& b) {
+  a = {a.x - b.x, a.y - b.y};
+  return a;
+}
+
 // ===== General Utilities =====
 
-// Type used for image data. This will eventually be templated to support
-// different vector lengths, as well as half-float data.
-using ImageT = float4;
 // Type of temporary values. This will always be some kind of float, even
 // when ImageT is half-float.
-using TempT = float4;
+template <class ImageT>
+struct temp_type {
+  using type = ImageT;
+};
+
+// Return a single pixel value with all channels set to black.
+template <class T>
+__device__ static T black(){};
+
+template <>
+__device__ float4 black<float4>() {
+  return {0, 0, 0, 0};
+}
+template <>
+__device__ float2 black<float2>() {
+  return {0, 0};
+}
+template <>
+__device__ float black<float>() {
+  return 0;
+}
 
 __device__ static int cuda_index_x() {
   return blockIdx.x * blockDim.x + threadIdx.x;
@@ -55,6 +89,7 @@ __device__ static int cuda_index_y() {
 // Naive transpose
 // Supporting vector types with a shared-memory transpose is non-trivial, and
 // this is fast enough for now.
+template <class ImageT>
 __global__ void transpose_kernel(ImageT* dest, const ImageT* source,
                                  image_dims dims) {
   int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -66,6 +101,7 @@ __global__ void transpose_kernel(ImageT* dest, const ImageT* source,
   dest[x * dims.height + y] = source[pixel_index(dims, x, y)];
 }
 
+template <class ImageT>
 void transpose(ImageT* dest, const ImageT* source, image_dims dims) {
   dim3 grid(n_blocks(dims.width, 16), n_blocks(dims.height, 16));
   dim3 threads(16, 16);
@@ -73,8 +109,11 @@ void transpose(ImageT* dest, const ImageT* source, image_dims dims) {
 }
 
 // ===== Blur functions =====
+template <class ImageT>
 __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
                                          image_dims dims, int radius) {
+  using TempT = typename temp_type<ImageT>::type;
+
   // Split each column into vertical slices
   int n_slices = blockDim.y;
   int slice_height = (dims.height + n_slices - 1) / n_slices;
@@ -94,7 +133,7 @@ __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
         sum += source[pixel_index(dims, x, y)];
       }
     } else {
-      sum = {0, 0, 0, 0};
+      sum = black<TempT>();
       for (int y = y_start - radius; y < y_start + radius + 1; y++) {
         sum += source[pixel_index(dims, x, max(y, 0))];
       }
@@ -117,9 +156,11 @@ __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
 
 // Vertical box blur, implemented by direct convolution instead of sliding
 // window method.
+template <class ImageT>
 __global__ void vertical_direct_box_blur_kernel(ImageT* dest,
                                                 const ImageT* source,
                                                 image_dims dims, int radius) {
+  using TempT = typename temp_type<ImageT>::type;
   int y = cuda_index_y();
   float scale = 1.0f / (2 * radius + 1);
 
@@ -138,9 +179,11 @@ __global__ void vertical_direct_box_blur_kernel(ImageT* dest,
 
 // Horizontal box blur, implemented by direct convolution instead of sliding
 // window method.
+template <class ImageT>
 __global__ void horizontal_direct_box_blur_kernel(ImageT* dest,
                                                   const ImageT* source,
                                                   image_dims dims, int radius) {
+  using TempT = typename temp_type<ImageT>::type;
   int y = cuda_index_y();
   float scale = 1.0f / (2 * radius + 1);
 
@@ -159,8 +202,10 @@ __global__ void horizontal_direct_box_blur_kernel(ImageT* dest,
 
 #include "weights.h"
 
+template <class ImageT>
 __global__ void horizontal_precomputed_gaussian_blur_kernel(
     ImageT* dest, const ImageT* source, image_dims dims, int radius) {
+  using TempT = typename temp_type<ImageT>::type;
   int y = cuda_index_y();
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
@@ -180,10 +225,12 @@ __global__ void horizontal_precomputed_gaussian_blur_kernel(
   }
 }
 
+template <class ImageT>
 __global__ void vertical_precomputed_gaussian_blur_kernel(ImageT* dest,
                                                           const ImageT* source,
                                                           image_dims dims,
                                                           int radius) {
+  using TempT = typename temp_type<ImageT>::type;
   int y = cuda_index_y();
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
@@ -209,6 +256,7 @@ __global__ void vertical_precomputed_gaussian_blur_kernel(ImageT* dest,
 // more-or-less equally between the passes.
 // dest and source may point to the same image (if you don't need to keep the
 // source image and want to save some memory).
+template <class ImageT>
 void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
                  image_dims dims, int radius, int n_passes,
                  int outputs_per_thread_v = 1, int outputs_per_thread_h = 1,
@@ -272,6 +320,7 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
 }
 
 // Use horizontal and vertical direct blur kernels, without transposing.
+template <class ImageT>
 void direct_blur_no_transpose(ImageT* dest, const ImageT* source, ImageT* temp,
                               image_dims dims, int radius, int n_passes,
                               int outputs_per_thread = 1) {
@@ -320,6 +369,7 @@ void direct_blur_no_transpose(ImageT* dest, const ImageT* source, ImageT* temp,
   assert(from == dest);
 }
 
+template <class ImageT>
 void precomputed_gaussian_blur(ImageT* dest, const ImageT* source, ImageT* temp,
                                image_dims dims, int radius,
                                int outputs_per_thread = 1) {

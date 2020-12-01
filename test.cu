@@ -38,16 +38,57 @@ void copy_image(void* dest, const void* source, image_dims dims) {
       cudaMemcpy(dest, source, allocated_bytes(dims), cudaMemcpyDefault));
 }
 
+auto inf = std::numeric_limits<float>::infinity();
+template <class T>
+static T infinity();
+template <>
+float4 infinity() {
+  return {inf, inf, inf, inf};
+}
+template <>
+float2 infinity() {
+  return {inf, inf};
+}
+
 // Reduce width but keep stride unchanged, to test handling of padded images.
 // Fill padding with infinite values, which should make it obvious if these
 // pixels are accidentally accessed.
-void crop_image(float4* image, image_dims& dims) {
+template <class T>
+static void crop_image(T* image, image_dims& dims) {
   dims.width -= 9;
-  auto inf = std::numeric_limits<float>::infinity();
 
   for (size_t y = 0; y < dims.height; y++) {
     for (size_t x = dims.width; x < dims.stride_pixels; x++) {
-      image[pixel_index(dims, x, y)] = {inf, inf, inf, inf};
+      image[pixel_index(dims, x, y)] = infinity<T>();
+    }
+  }
+}
+
+const int CUDA_ALIGN = 256;
+static std::pair<std::unique_ptr<float2[]>, image_dims> convert_to_float2(
+    float4* image, image_dims dims) {
+  image_dims v2_dims = dims;
+  v2_dims.channel_count = 2;
+  size_t stride =
+      (stride_bytes(v2_dims) + CUDA_ALIGN - 1) / CUDA_ALIGN * CUDA_ALIGN;
+  v2_dims.stride_pixels = stride / pixel_size(v2_dims);
+
+  auto v2_image = std::make_unique<float2[]>(allocated_pixels(v2_dims));
+  for (size_t y = 0; y < dims.height; y++) {
+    for (size_t x = 0; x < dims.width; x++) {
+      auto p = image[pixel_index(dims, x, y)];
+      v2_image.get()[pixel_index(v2_dims, x, y)] = {p.x, p.y};
+    }
+  }
+  return {std::move(v2_image), v2_dims};
+}
+
+static void convert_to_float4(float4* dest, float2* source,
+                              image_dims dest_dims, image_dims source_dims) {
+  for (size_t y = 0; y < source_dims.height; y++) {
+    for (size_t x = 0; x < source_dims.width; x++) {
+      auto p = source[pixel_index(source_dims, x, y)];
+      dest[pixel_index(dest_dims, x, y)] = {p.x, p.y, 0, 1};
     }
   }
 }
@@ -85,16 +126,17 @@ static float diff(const float4& a, const float4& b) {
   return std::abs(std::max({a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w}));
 }
 
-int run_checks(float4* pixels, image_dims dims) {
+template <class T>
+static void run_checks_internal(T* pixels, image_dims dims,
+                                const std::string& format,
+                                std::vector<std::string>& failures) {
   auto source = alloc_and_copy(pixels, dims);
-  auto dest = cuda_malloc_unique<float4>(allocated_bytes(dims));
-  auto temp = cuda_malloc_unique<float4>(allocated_bytes(dims));
+  auto dest = cuda_malloc_unique<T>(allocated_bytes(dims));
+  auto temp = cuda_malloc_unique<T>(allocated_bytes(dims));
 
   std::vector<int> radii{1, 3, 5, 10, 20, 50, 100};
   auto baseline = std::make_unique<float4[]>(allocated_pixels(dims));
   auto result = std::make_unique<float4[]>(allocated_pixels(dims));
-
-  std::vector<std::string> failures;
 
   const int n_passes = 3;
   for (int crop = 0; crop <= 1; crop++) {
@@ -116,8 +158,10 @@ int run_checks(float4* pixels, image_dims dims) {
         }
         if (max_diff > threshold) {
           std::cout << "x" << std::flush;
-          failures.push_back(name + " radius " + std::to_string(radius) +
-                             (crop ? " (cropped)" : " ") +
+          failures.push_back(name + "[" + format + "]" +
+                             (crop ? " (cropped) " : " ") + "radius " +
+                             std::to_string(radius) +
+
                              " failed: max diff " + std::to_string(max_diff));
         } else {
           std::cout << "." << std::flush;
@@ -158,11 +202,21 @@ int run_checks(float4* pixels, image_dims dims) {
         precomputed_gaussian_blur(dest.get(), source.get(), temp.get(), dims,
                                   radius, 2);
         // Large threshold for now, due to edge artifacts
-        check_result("gaussian", 0.03f);
+        check_result("gaussian", 0.05f);
       }
     }
   }
+}
+
+static int run_checks(float4* pixels, image_dims dims) {
+  std::vector<std::string> failures;
+
   std::cout << "\n";
+
+  run_checks_internal(pixels, dims, "float4", failures);
+
+  auto [pixels2, dims2] = convert_to_float2(pixels, dims);
+  run_checks_internal(pixels2.get(), dims2, "float2", failures);
 
   if (failures.empty()) {
     std::cout << "OK!\n";
@@ -182,6 +236,7 @@ int main(int argc, char** argv) {
   bool do_direct = false;
   bool do_gaussian = false;
   bool do_check = false;
+  bool do_float2 = false;
 
   std::vector<std::string> args;
   for (int i = 1; i < argc; i++) {
@@ -198,6 +253,8 @@ int main(int argc, char** argv) {
       do_gaussian = true;
     else if (a == "-check")
       do_check = true;
+    else if (a == "-float2")
+      do_float2 = true;
     else
       args.push_back(a);
   }
@@ -266,13 +323,31 @@ int main(int argc, char** argv) {
   }
 
   // Current fastest configuration (at 1920x1080, radius 10)
-  timeit("fastest blur", [&]() {
-    smooth_blur(dest.get(), source.get(), temp.get(), dims, radius, n_passes, 3,
-                3, 1, 2);
-  });
+  if (do_float2) {
+    auto [pixels2, _dims2] = convert_to_float2(pixels.get(), dims);
+    auto dims2 = _dims2;
+    auto source2 = alloc_and_copy(pixels2.get(), dims2);
+    auto dest2 = cuda_malloc_unique<float2>(allocated_bytes(dims2));
+    auto temp2 = cuda_malloc_unique<float2>(allocated_bytes(dims2));
 
-  // Copy result back to host and write
-  copy_image(pixels.get(), dest.get(), dims);
+    timeit("fastest blur (float2)", [&]() {
+      smooth_blur(dest2.get(), source2.get(), temp2.get(), dims, radius,
+                  n_passes, 3, 3, 1, 2);
+    });
+
+    // Copy result back to host and convert
+    copy_image(pixels2.get(), dest2.get(), dims2);
+    convert_to_float4(pixels.get(), pixels2.get(), dims, dims2);
+  } else {
+    timeit("fastest blur", [&]() {
+      smooth_blur(dest.get(), source.get(), temp.get(), dims, radius, n_passes,
+                  3, 3, 1, 2);
+    });
+
+    // Copy result back to host
+    copy_image(pixels.get(), dest.get(), dims);
+  }
+
   write_exr(args[1], dims, pixels.get());
 
   return 0;
