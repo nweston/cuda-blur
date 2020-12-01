@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 #include "exr.h"
 #include "image.h"
 #include "timer.h"
@@ -79,18 +80,37 @@ static void npp_blur(float4* dest, const float4* source, float4* temp,
   // FIXME: this will only work for odd numbers of passes
 }
 
-const bool do_crop = false;
-const bool do_outputs = false;
-const bool do_column_split = false;
-const bool do_npp = false;
-const bool do_direct = false;
-const bool do_gaussian = true;
-
 int main(int argc, char** argv) {
-  int radius = (argc > 3) ? std::stoi(argv[3]) : 5;
-  int n_passes = (argc > 4) ? std::stoi(argv[4]) : 3;
+  bool do_crop = false;
+  bool do_outputs = false;
+  bool do_column_split = false;
+  bool do_npp = false;
+  bool do_direct = false;
+  bool do_gaussian = false;
 
-  auto [pixels, _dims] = read_exr(argv[1]);
+  std::vector<std::string> args;
+  for (int i = 1; i < argc; i++) {
+    std::string a(argv[i]);
+    if (a == "-crop")
+      do_crop = true;
+    else if (a == "-outputs")
+      do_outputs = true;
+    else if (a == "-columns")
+      do_column_split = true;
+    else if (a == "-npp")
+      do_npp = true;
+    else if (a == "-direct")
+      do_direct = true;
+    else if (a == "-gaussian")
+      do_gaussian = true;
+    else
+      args.push_back(a);
+  }
+
+  int radius = (args.size() > 2) ? std::stoi(args[2]) : 5;
+  int n_passes = (args.size() > 3) ? std::stoi(args[3]) : 3;
+
+  auto [pixels, _dims] = read_exr(args[0]);
   // Work around stupid "structured binding can't be captured" issue
   auto dims = _dims;
 
@@ -165,7 +185,7 @@ int main(int argc, char** argv) {
 
   // Copy result back to host and write
   copy_image(pixels.get(), dest.get(), dims);
-  write_exr(argv[2], dims, pixels.get());
+  write_exr(args[1], dims, pixels.get());
 
   return 0;
 }
