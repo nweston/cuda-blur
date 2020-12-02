@@ -65,30 +65,36 @@ static void crop_image(T* image, image_dims& dims) {
 }
 
 const int CUDA_ALIGN = 256;
-static std::pair<std::unique_ptr<float2[]>, image_dims> convert_to_float2(
-    float4* image, image_dims dims) {
-  image_dims v2_dims = dims;
-  v2_dims.channel_count = 2;
+static image_dims convert_dims(image_dims dims, int channel_count,
+                               size_t sizeof_channel) {
+  image_dims new_dims = dims;
+  new_dims.channel_count = channel_count;
+  new_dims.sizeof_channel = sizeof_channel;
   size_t stride =
-      (stride_bytes(v2_dims) + CUDA_ALIGN - 1) / CUDA_ALIGN * CUDA_ALIGN;
-  v2_dims.stride_pixels = stride / pixel_size(v2_dims);
+      (stride_bytes(new_dims) + CUDA_ALIGN - 1) / CUDA_ALIGN * CUDA_ALIGN;
+  new_dims.stride_pixels = stride / pixel_size(new_dims);
 
-  auto v2_image = std::make_unique<float2[]>(allocated_pixels(v2_dims));
-  for (size_t y = 0; y < dims.height; y++) {
-    for (size_t x = 0; x < dims.width; x++) {
-      auto p = image[pixel_index(dims, x, y)];
-      v2_image.get()[pixel_index(v2_dims, x, y)] = {p.x, p.y};
-    }
-  }
-  return {std::move(v2_image), v2_dims};
+  return new_dims;
 }
 
-static void convert_to_float4(float4* dest, float2* source,
-                              image_dims dest_dims, image_dims source_dims) {
+template <class DestT, class SourceT>
+static DestT convert(const SourceT& source);
+template <>
+float4 convert(const float2& source) {
+  return {source.x, source.y, 0, 1};
+}
+template <>
+float2 convert(const float4& source) {
+  return {source.x, source.y};
+}
+
+template <class DestT, class SourceT>
+static void convert_image(DestT* dest, SourceT* source, image_dims dest_dims,
+                          image_dims source_dims) {
   for (size_t y = 0; y < source_dims.height; y++) {
     for (size_t x = 0; x < source_dims.width; x++) {
-      auto p = source[pixel_index(source_dims, x, y)];
-      dest[pixel_index(dest_dims, x, y)] = {p.x, p.y, 0, 1};
+      dest[pixel_index(dest_dims, x, y)] =
+          convert<DestT>(source[pixel_index(source_dims, x, y)]);
     }
   }
 }
@@ -215,7 +221,9 @@ static int run_checks(float4* pixels, image_dims dims) {
 
   run_checks_internal(pixels, dims, "float4", failures);
 
-  auto [pixels2, dims2] = convert_to_float2(pixels, dims);
+  auto dims2 = convert_dims(dims, 2, sizeof(float));
+  auto pixels2 = std::make_unique<float2[]>(allocated_pixels(dims2));
+  convert_image(pixels2.get(), pixels, dims2, dims);
   run_checks_internal(pixels2.get(), dims2, "float2", failures);
 
   if (failures.empty()) {
@@ -227,6 +235,28 @@ static int run_checks(float4* pixels, image_dims dims) {
     }
     return failures.size();
   }
+}
+
+template <class T>
+void convert_and_test(float4* pixels, image_dims dims, int radius, int n_passes,
+                      int channel_count, size_t sizeof_channel,
+                      const std::string& label) {
+  auto dims2 = convert_dims(dims, channel_count, sizeof_channel);
+  auto pixels2 = std::make_unique<T[]>(allocated_pixels(dims2));
+  convert_image(pixels2.get(), pixels, dims2, dims);
+
+  auto source2 = alloc_and_copy(pixels2.get(), dims2);
+  auto dest2 = cuda_malloc_unique<T>(allocated_bytes(dims2));
+  auto temp2 = cuda_malloc_unique<T>(allocated_bytes(dims2));
+
+  timeit("fastest blur " + label, [&]() {
+    smooth_blur(dest2.get(), source2.get(), temp2.get(), dims, radius, n_passes,
+                3, 3, 1, 2);
+  });
+
+  // Copy result back to host and convert
+  copy_image(pixels2.get(), dest2.get(), dims2);
+  convert_image(pixels, pixels2.get(), dims, dims2);
 }
 
 int main(int argc, char** argv) {
@@ -324,20 +354,8 @@ int main(int argc, char** argv) {
 
   // Current fastest configuration (at 1920x1080, radius 10)
   if (do_float2) {
-    auto [pixels2, _dims2] = convert_to_float2(pixels.get(), dims);
-    auto dims2 = _dims2;
-    auto source2 = alloc_and_copy(pixels2.get(), dims2);
-    auto dest2 = cuda_malloc_unique<float2>(allocated_bytes(dims2));
-    auto temp2 = cuda_malloc_unique<float2>(allocated_bytes(dims2));
-
-    timeit("fastest blur (float2)", [&]() {
-      smooth_blur(dest2.get(), source2.get(), temp2.get(), dims, radius,
-                  n_passes, 3, 3, 1, 2);
-    });
-
-    // Copy result back to host and convert
-    copy_image(pixels2.get(), dest2.get(), dims2);
-    convert_to_float4(pixels.get(), pixels2.get(), dims, dims2);
+    convert_and_test<float2>(pixels.get(), dims, radius, n_passes, 2,
+                             sizeof(float), "(float2)");
   } else {
     timeit("fastest blur", [&]() {
       smooth_blur(dest.get(), source.get(), temp.get(), dims, radius, n_passes,
