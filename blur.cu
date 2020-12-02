@@ -125,6 +125,19 @@ __device__ static int cuda_index_y() {
   return blockIdx.y * blockDim.y + threadIdx.y;
 }
 
+template <class ImageT>
+__device__ static typename temp_type<ImageT>::type get_pixel(
+    const ImageT* image, const image_dims& dims, int x, int y) {
+  return to_temp(image[pixel_index(dims, x, y)]);
+}
+
+template <class ImageT>
+__device__ static void set_pixel(
+    ImageT* image, const image_dims& dims, int x, int y,
+    const typename temp_type<ImageT>::type& value) {
+  image[pixel_index(dims, x, y)] = from_temp<ImageT>(value);
+}
+
 // ===== Transpose =====
 
 // Naive transpose
@@ -168,15 +181,15 @@ __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
 
     // Fill initial box, repeating the edge pixel
     if (y_start == 0) {
-      TempT edge = to_temp(source[pixel_index(dims, x, 0)]);
+      TempT edge = get_pixel(source, dims, x, 0);
       sum = edge * (radius + 1);
       for (int y = 1; y < radius + 1; y++) {
-        sum += to_temp(source[pixel_index(dims, x, y)]);
+        sum += get_pixel(source, dims, x, y);
       }
     } else {
       sum = black<TempT>();
       for (int y = y_start - radius; y < y_start + radius + 1; y++) {
-        sum += to_temp(source[pixel_index(dims, x, max(y, 0))]);
+        sum += get_pixel(source, dims, x, max(y, 0));
       }
     }
 
@@ -184,14 +197,13 @@ __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
     int top = y_start - radius;
     int bottom = y_start + radius;
     for (int y = y_start; y < y_limit; y++) {
-      dest[pixel_index(dims, x, y)] = from_temp<ImageT>(sum * scale);
+      set_pixel(dest, dims, x, y, sum * scale);
 
       // Shift the box
-      sum -= to_temp(source[pixel_index(dims, x, max(top, 0))]);
+      sum -= get_pixel(source, dims, x, max(top, 0));
       top++;
       bottom++;
-      sum += to_temp(
-          source[pixel_index(dims, x, min(bottom, int(dims.height - 1)))]);
+      sum += get_pixel(source, dims, x, min(bottom, int(dims.height - 1)));
     }
   }
 }
@@ -206,16 +218,15 @@ __global__ void vertical_direct_box_blur_kernel(ImageT* dest,
   float scale = 1.0f / (2 * radius + 1);
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    auto sum = to_temp(source[pixel_index(dims, x, y)]);
+    auto sum = get_pixel(source, dims, x, y);
     for (int yi = y - radius; yi < y; yi++) {
-      sum += to_temp(source[pixel_index(dims, x, max(yi, 0))]);
+      sum += get_pixel(source, dims, x, max(yi, 0));
     }
     for (int yi = y + 1; yi < y + radius + 1; yi++) {
-      sum +=
-          to_temp(source[pixel_index(dims, x, min(yi, int(dims.height - 1)))]);
+      sum += get_pixel(source, dims, x, min(yi, int(dims.height - 1)));
     }
 
-    dest[pixel_index(dims, x, y)] = from_temp<ImageT>(sum * scale);
+    set_pixel(dest, dims, x, y, sum * scale);
   }
 }
 
@@ -229,16 +240,15 @@ __global__ void horizontal_direct_box_blur_kernel(ImageT* dest,
   float scale = 1.0f / (2 * radius + 1);
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    auto sum = to_temp(source[pixel_index(dims, x, y)]);
+    auto sum = get_pixel(source, dims, x, y);
     for (int xi = x - radius; xi < x; xi++) {
-      sum += to_temp(source[pixel_index(dims, max(xi, 0), y)]);
+      sum += get_pixel(source, dims, max(xi, 0), y);
     }
     for (int xi = x + 1; xi < x + radius + 1; xi++) {
-      sum +=
-          to_temp(source[pixel_index(dims, min(xi, int(dims.width - 1)), y)]);
+      sum += get_pixel(source, dims, min(xi, int(dims.width - 1)), y);
     }
 
-    dest[pixel_index(dims, x, y)] = from_temp<ImageT>(sum * scale);
+    set_pixel(dest, dims, x, y, sum * scale);
   }
 }
 
@@ -250,21 +260,19 @@ __global__ void horizontal_precomputed_gaussian_blur_kernel(
   int y = cuda_index_y();
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    auto sum = to_temp(source[pixel_index(dims, x, y)]) * weights[radius][0];
+    auto sum = get_pixel(source, dims, x, y) * weights[radius][0];
     for (int xi = x - radius; xi < x; xi++) {
       int dx = x - xi;
       float w = weights[radius][dx];
-      sum += to_temp(source[pixel_index(dims, max(xi, 0), y)]) * w;
+      sum += get_pixel(source, dims, max(xi, 0), y) * w;
     }
     for (int xi = x + 1; xi < x + radius + 1; xi++) {
       int dx = xi - x;
       float w = weights[radius][dx];
-      sum +=
-          to_temp(source[pixel_index(dims, min(xi, int(dims.width - 1)), y)]) *
-          w;
+      sum += get_pixel(source, dims, min(xi, int(dims.width - 1)), y) * w;
     }
 
-    dest[pixel_index(dims, x, y)] = from_temp<ImageT>(sum);
+    set_pixel(dest, dims, x, y, sum);
   }
 }
 
@@ -276,21 +284,19 @@ __global__ void vertical_precomputed_gaussian_blur_kernel(ImageT* dest,
   int y = cuda_index_y();
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    auto sum = to_temp(source[pixel_index(dims, x, y)]) * weights[radius][0];
+    auto sum = get_pixel(source, dims, x, y) * weights[radius][0];
     for (int yi = y - radius; yi < y; yi++) {
       int dy = y - yi;
       float w = weights[radius][dy];
-      sum += to_temp(source[pixel_index(dims, x, max(yi, 0))]) * w;
+      sum += get_pixel(source, dims, x, max(yi, 0)) * w;
     }
     for (int yi = y + 1; yi < y + radius + 1; yi++) {
       int dy = yi - y;
       float w = weights[radius][dy];
-      sum +=
-          to_temp(source[pixel_index(dims, x, min(yi, int(dims.height - 1)))]) *
-          w;
+      sum += get_pixel(source, dims, x, min(yi, int(dims.height - 1))) * w;
     }
 
-    dest[pixel_index(dims, x, y)] = from_temp<ImageT>(sum);
+    set_pixel(dest, dims, x, y, sum);
   }
 }
 
