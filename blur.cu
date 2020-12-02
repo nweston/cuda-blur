@@ -2,23 +2,73 @@
 #include <cooperative_groups.h>
 #include "cuda_runtime_api.h"
 
-#define cudaCheckError(code)                                         \
-  {                                                                  \
-    if ((code) != cudaSuccess) {                                     \
-      handleCudaError(__FILE__, __LINE__, cudaGetErrorString(code)); \
-    }                                                                \
-  }
+// ===== Pixel functions =====
 
-void handleCudaError(const char* file, int line, const char* error) {
-  std::cerr << "CUDA failure " << file << ":" << line << " " << error << "\n";
+// All of the blur kernels have two variables: ImageT which is the type
+// stored in global memory, and TempT which is used for thread-local
+// values. ImageT is given as a template argument, and TempT is derived from
+// ImageT via the temp_type template.
+
+// To add a new image type, you must specialize temp_type, to_temp and
+// from_temp accordingly.
+
+// Temp types have to be something we can do math on, which usually means a
+// float or float vector. Specifically they must support += and -= (with the
+// same type on the rhs), and multiplication by a float. You must also
+// specialize black() for each temp type.
+
+// For example, when ImageT=half2, the corresponding TempT is float2. For
+// floating point types, ImageT and TempT will be the same.
+//
+
+// Type of temporary values. This will always be some kind of float, even
+// when ImageT is half-float.
+template <class ImageT>
+struct temp_type {
+  using type = ImageT;
+};
+
+template <>
+struct temp_type<half2> {
+  using type = float2;
+};
+
+// Convert T to its corresponding TempT
+template <class T>
+__device__ static typename temp_type<T>::type to_temp(const T& a) {
+  return a;
+}
+template <>
+float2 to_temp(const half2& a) {
+  return {a.x, a.y};
 }
 
-static int n_blocks(int threads, int block_size, int outputs_per_thread = 1) {
-  int block_outputs = block_size * outputs_per_thread;
-  return (threads + block_outputs - 1) / block_outputs;
+// Convert to T from its corresponding TempT
+template <class T>
+__device__ static T from_temp(const typename temp_type<T>::type& a) {
+  return a;
+}
+template <>
+half2 from_temp(const float2& a) {
+  return {a.x, a.y};
 }
 
-// ===== Operators for built-in vector types =====
+// Return a single pixel value with all channels set to black.
+template <class T>
+__device__ static T black(){};
+
+template <>
+__device__ float4 black<float4>() {
+  return {0, 0, 0, 0};
+}
+template <>
+__device__ float2 black<float2>() {
+  return {0, 0};
+}
+template <>
+__device__ float black<float>() {
+  return 0;
+}
 
 /// float4 ///
 __device__ static float4 operator*(const float4& a, const float b) {
@@ -49,31 +99,22 @@ __device__ static float2& operator-=(float2& a, const float2& b) {
   a = {a.x - b.x, a.y - b.y};
   return a;
 }
-
 // ===== General Utilities =====
 
-// Type of temporary values. This will always be some kind of float, even
-// when ImageT is half-float.
-template <class ImageT>
-struct temp_type {
-  using type = ImageT;
-};
+#define cudaCheckError(code)                                         \
+  {                                                                  \
+    if ((code) != cudaSuccess) {                                     \
+      handleCudaError(__FILE__, __LINE__, cudaGetErrorString(code)); \
+    }                                                                \
+  }
 
-// Return a single pixel value with all channels set to black.
-template <class T>
-__device__ static T black(){};
+void handleCudaError(const char* file, int line, const char* error) {
+  std::cerr << "CUDA failure " << file << ":" << line << " " << error << "\n";
+}
 
-template <>
-__device__ float4 black<float4>() {
-  return {0, 0, 0, 0};
-}
-template <>
-__device__ float2 black<float2>() {
-  return {0, 0};
-}
-template <>
-__device__ float black<float>() {
-  return 0;
+static int n_blocks(int threads, int block_size, int outputs_per_thread = 1) {
+  int block_outputs = block_size * outputs_per_thread;
+  return (threads + block_outputs - 1) / block_outputs;
 }
 
 __device__ static int cuda_index_x() {
@@ -127,15 +168,15 @@ __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
 
     // Fill initial box, repeating the edge pixel
     if (y_start == 0) {
-      TempT edge = source[pixel_index(dims, x, 0)];
+      TempT edge = to_temp(source[pixel_index(dims, x, 0)]);
       sum = edge * (radius + 1);
       for (int y = 1; y < radius + 1; y++) {
-        sum += source[pixel_index(dims, x, y)];
+        sum += to_temp(source[pixel_index(dims, x, y)]);
       }
     } else {
       sum = black<TempT>();
       for (int y = y_start - radius; y < y_start + radius + 1; y++) {
-        sum += source[pixel_index(dims, x, max(y, 0))];
+        sum += to_temp(source[pixel_index(dims, x, max(y, 0))]);
       }
     }
 
@@ -143,13 +184,14 @@ __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
     int top = y_start - radius;
     int bottom = y_start + radius;
     for (int y = y_start; y < y_limit; y++) {
-      dest[pixel_index(dims, x, y)] = sum * scale;
+      dest[pixel_index(dims, x, y)] = from_temp<ImageT>(sum * scale);
 
       // Shift the box
-      sum -= source[pixel_index(dims, x, max(top, 0))];
+      sum -= to_temp(source[pixel_index(dims, x, max(top, 0))]);
       top++;
       bottom++;
-      sum += source[pixel_index(dims, x, min(bottom, int(dims.height - 1)))];
+      sum += to_temp(
+          source[pixel_index(dims, x, min(bottom, int(dims.height - 1)))]);
     }
   }
 }
@@ -160,20 +202,20 @@ template <class ImageT>
 __global__ void vertical_direct_box_blur_kernel(ImageT* dest,
                                                 const ImageT* source,
                                                 image_dims dims, int radius) {
-  using TempT = typename temp_type<ImageT>::type;
   int y = cuda_index_y();
   float scale = 1.0f / (2 * radius + 1);
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    TempT sum = source[pixel_index(dims, x, y)];
+    auto sum = to_temp(source[pixel_index(dims, x, y)]);
     for (int yi = y - radius; yi < y; yi++) {
-      sum += source[pixel_index(dims, x, max(yi, 0))];
+      sum += to_temp(source[pixel_index(dims, x, max(yi, 0))]);
     }
     for (int yi = y + 1; yi < y + radius + 1; yi++) {
-      sum += source[pixel_index(dims, x, min(yi, int(dims.height - 1)))];
+      sum +=
+          to_temp(source[pixel_index(dims, x, min(yi, int(dims.height - 1)))]);
     }
 
-    dest[pixel_index(dims, x, y)] = sum * scale;
+    dest[pixel_index(dims, x, y)] = from_temp<ImageT>(sum * scale);
   }
 }
 
@@ -183,20 +225,20 @@ template <class ImageT>
 __global__ void horizontal_direct_box_blur_kernel(ImageT* dest,
                                                   const ImageT* source,
                                                   image_dims dims, int radius) {
-  using TempT = typename temp_type<ImageT>::type;
   int y = cuda_index_y();
   float scale = 1.0f / (2 * radius + 1);
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    TempT sum = source[pixel_index(dims, x, y)];
+    auto sum = to_temp(source[pixel_index(dims, x, y)]);
     for (int xi = x - radius; xi < x; xi++) {
-      sum += source[pixel_index(dims, max(xi, 0), y)];
+      sum += to_temp(source[pixel_index(dims, max(xi, 0), y)]);
     }
     for (int xi = x + 1; xi < x + radius + 1; xi++) {
-      sum += source[pixel_index(dims, min(xi, int(dims.width - 1)), y)];
+      sum +=
+          to_temp(source[pixel_index(dims, min(xi, int(dims.width - 1)), y)]);
     }
 
-    dest[pixel_index(dims, x, y)] = sum * scale;
+    dest[pixel_index(dims, x, y)] = from_temp<ImageT>(sum * scale);
   }
 }
 
@@ -205,23 +247,24 @@ __global__ void horizontal_direct_box_blur_kernel(ImageT* dest,
 template <class ImageT>
 __global__ void horizontal_precomputed_gaussian_blur_kernel(
     ImageT* dest, const ImageT* source, image_dims dims, int radius) {
-  using TempT = typename temp_type<ImageT>::type;
   int y = cuda_index_y();
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    TempT sum = source[pixel_index(dims, x, y)] * weights[radius][0];
+    auto sum = to_temp(source[pixel_index(dims, x, y)]) * weights[radius][0];
     for (int xi = x - radius; xi < x; xi++) {
       int dx = x - xi;
       float w = weights[radius][dx];
-      sum += source[pixel_index(dims, max(xi, 0), y)] * w;
+      sum += to_temp(source[pixel_index(dims, max(xi, 0), y)]) * w;
     }
     for (int xi = x + 1; xi < x + radius + 1; xi++) {
       int dx = xi - x;
       float w = weights[radius][dx];
-      sum += source[pixel_index(dims, min(xi, int(dims.width - 1)), y)] * w;
+      sum +=
+          to_temp(source[pixel_index(dims, min(xi, int(dims.width - 1)), y)]) *
+          w;
     }
 
-    dest[pixel_index(dims, x, y)] = sum;
+    dest[pixel_index(dims, x, y)] = from_temp<ImageT>(sum);
   }
 }
 
@@ -230,23 +273,24 @@ __global__ void vertical_precomputed_gaussian_blur_kernel(ImageT* dest,
                                                           const ImageT* source,
                                                           image_dims dims,
                                                           int radius) {
-  using TempT = typename temp_type<ImageT>::type;
   int y = cuda_index_y();
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    TempT sum = source[pixel_index(dims, x, y)] * weights[radius][0];
+    auto sum = to_temp(source[pixel_index(dims, x, y)]) * weights[radius][0];
     for (int yi = y - radius; yi < y; yi++) {
       int dy = y - yi;
       float w = weights[radius][dy];
-      sum += source[pixel_index(dims, x, max(yi, 0))] * w;
+      sum += to_temp(source[pixel_index(dims, x, max(yi, 0))]) * w;
     }
     for (int yi = y + 1; yi < y + radius + 1; yi++) {
       int dy = yi - y;
       float w = weights[radius][dy];
-      sum += source[pixel_index(dims, x, min(yi, int(dims.height - 1)))] * w;
+      sum +=
+          to_temp(source[pixel_index(dims, x, min(yi, int(dims.height - 1)))]) *
+          w;
     }
 
-    dest[pixel_index(dims, x, y)] = sum;
+    dest[pixel_index(dims, x, y)] = from_temp<ImageT>(sum);
   }
 }
 

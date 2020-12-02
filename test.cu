@@ -12,6 +12,27 @@
 
 #include "blur.cu"  // Include source directly for now
 
+// ===== half4 type =====
+struct half4 {
+  half x;
+  half y;
+  half z;
+  half w;
+};
+template <>
+struct temp_type<half4> {
+  using type = float4;
+};
+template <>
+float4 to_temp(const half4& a) {
+  return {a.x, a.y, a.z, a.w};
+}
+template <>
+half4 from_temp(const float4& a) {
+  return {a.x, a.y, a.z, a.w};
+}
+// ==========
+
 struct CudaFreeFunctor {
   void operator()(void* p) noexcept { cudaCheckError(cudaFree(p)); }
 };
@@ -49,6 +70,18 @@ template <>
 float2 infinity() {
   return {inf, inf};
 }
+template <>
+float infinity() {
+  return inf;
+}
+template <>
+half2 infinity() {
+  return {inf, inf};
+}
+template <>
+half4 infinity() {
+  return {inf, inf, inf, inf};
+}
 
 // Reduce width but keep stride unchanged, to test handling of padded images.
 // Fill padding with infinite values, which should make it obvious if these
@@ -78,7 +111,9 @@ static image_dims convert_dims(image_dims dims, int channel_count,
 }
 
 template <class DestT, class SourceT>
-static DestT convert(const SourceT& source);
+static DestT convert(const SourceT& source) {
+  return {source.x, source.y, source.z, source.w};
+}
 template <>
 float4 convert(const float2& source) {
   return {source.x, source.y, 0, 1};
@@ -86,6 +121,22 @@ float4 convert(const float2& source) {
 template <>
 float2 convert(const float4& source) {
   return {source.x, source.y};
+}
+template <>
+float4 convert(const float& source) {
+  return {source, 0, 0, 1};
+}
+template <>
+float convert(const float4& source) {
+  return source.x;
+}
+template <>
+half2 convert(const float4& source) {
+  return {source.x, source.y};
+}
+template <>
+float4 convert(const half2& source) {
+  return {source.x, source.y, 0, 1};
 }
 
 template <class DestT, class SourceT>
@@ -217,14 +268,40 @@ static void run_checks_internal(T* pixels, image_dims dims,
 static int run_checks(float4* pixels, image_dims dims) {
   std::vector<std::string> failures;
 
-  std::cout << "\n";
-
   run_checks_internal(pixels, dims, "float4", failures);
 
-  auto dims2 = convert_dims(dims, 2, sizeof(float));
-  auto pixels2 = std::make_unique<float2[]>(allocated_pixels(dims2));
-  convert_image(pixels2.get(), pixels, dims2, dims);
-  run_checks_internal(pixels2.get(), dims2, "float2", failures);
+  // float2
+  {
+    auto dims2 = convert_dims(dims, 2, sizeof(float));
+    auto pixels2 = std::make_unique<float2[]>(allocated_pixels(dims2));
+    convert_image(pixels2.get(), pixels, dims2, dims);
+    run_checks_internal(pixels2.get(), dims2, "float2", failures);
+  }
+
+  // float
+  {
+    auto dims2 = convert_dims(dims, 1, sizeof(float));
+    auto pixels2 = std::make_unique<float[]>(allocated_pixels(dims2));
+    convert_image(pixels2.get(), pixels, dims2, dims);
+    run_checks_internal(pixels2.get(), dims2, "float", failures);
+  }
+
+  // half4
+  {
+    auto dims2 = convert_dims(dims, 4, sizeof(half));
+    auto pixels2 = std::make_unique<half4[]>(allocated_pixels(dims2));
+    convert_image(pixels2.get(), pixels, dims2, dims);
+    run_checks_internal(pixels2.get(), dims2, "half4", failures);
+  }
+
+  // half2
+  {
+    auto dims2 = convert_dims(dims, 2, sizeof(half));
+    auto pixels2 = std::make_unique<half2[]>(allocated_pixels(dims2));
+    convert_image(pixels2.get(), pixels, dims2, dims);
+    run_checks_internal(pixels2.get(), dims2, "half2", failures);
+  }
+  std::cout << "\n";
 
   if (failures.empty()) {
     std::cout << "OK!\n";
@@ -267,6 +344,9 @@ int main(int argc, char** argv) {
   bool do_gaussian = false;
   bool do_check = false;
   bool do_float2 = false;
+  bool do_float = false;
+  bool do_half4 = false;
+  bool do_half2 = false;
 
   std::vector<std::string> args;
   for (int i = 1; i < argc; i++) {
@@ -285,6 +365,12 @@ int main(int argc, char** argv) {
       do_check = true;
     else if (a == "-float2")
       do_float2 = true;
+    else if (a == "-float")
+      do_float = true;
+    else if (a == "-half4")
+      do_half4 = true;
+    else if (a == "-half2")
+      do_half2 = true;
     else
       args.push_back(a);
   }
@@ -356,6 +442,15 @@ int main(int argc, char** argv) {
   if (do_float2) {
     convert_and_test<float2>(pixels.get(), dims, radius, n_passes, 2,
                              sizeof(float), "(float2)");
+  } else if (do_float) {
+    convert_and_test<float>(pixels.get(), dims, radius, n_passes, 1,
+                            sizeof(float), "(float)");
+  } else if (do_half4) {
+    convert_and_test<half4>(pixels.get(), dims, radius, n_passes, 4,
+                            sizeof(half), "(half4)");
+  } else if (do_half2) {
+    convert_and_test<half2>(pixels.get(), dims, radius, n_passes, 2,
+                            sizeof(half), "(half2)");
   } else {
     timeit("fastest blur", [&]() {
       smooth_blur(dest.get(), source.get(), temp.get(), dims, radius, n_passes,
