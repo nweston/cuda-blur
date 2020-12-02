@@ -259,7 +259,7 @@ static void run_checks_internal(T* pixels, image_dims dims,
         precomputed_gaussian_blur(dest.get(), source.get(), temp.get(), dims,
                                   radius, 2);
         // Large threshold for now, due to edge artifacts
-        check_result("gaussian", 0.05f);
+        check_result("gaussian");
       }
     }
   }

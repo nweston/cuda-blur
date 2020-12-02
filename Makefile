@@ -18,7 +18,7 @@ blur-test: test.o exr.o
 	$(CXX) $^ -o $@ $(LINKFLAGS) $(OPENEXR_LIBS)
 
 compute-weights: compute-weights.o
-	$(CXX) $^ -o $@
+	$(CXX) $^ -o $@ $(LINKFLAGS)
 
 %.o: %.cxx
 	$(CXX) -c $< $(CXXFLAGS)
@@ -26,5 +26,8 @@ compute-weights: compute-weights.o
 test.o: test.cu blur.cu timer.h image.h weights.h
 	$(NVCC) -c $< $(NVCCFLAGS)
 
+compute-weights.o: compute-weights.cu blur.cu image.h
+	$(NVCC) -c $< $(NVCCFLAGS)
+
 clean:
-	rm -f *.o blur-test
+	rm -f *.o blur-test compute-weights

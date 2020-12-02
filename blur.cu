@@ -258,50 +258,145 @@ __global__ void horizontal_direct_box_blur_kernel(ImageT* dest,
   }
 }
 
+// ===== Direct blur with precomputed weights =====
+
+// Blur images by direct convolution, but instead of box filtering, use
+// pre-computed weights to do that (approximate) Gaussian in a single
+// pass. This is still separated into horizontal/vertical blurs for
+// efficiency.
+
+// The weights used here match the iterated box filter blur, rather than an
+// actual Gaussian. This allows us to use the direct method for small blurs,
+// and switch to sliding window when the radius gets larger, without popping.
+
+// There is one complication: the iterated box blur has a different response
+// at the edges of the image. This is somewhat unintuitive. Essentially, when
+// we clamp and duplicate an edge pixel, it also duplicates whatever fraction
+// of the non-edge pixels was blurred into the edge by earlier passes, so the
+// final weighting is different than if we compute the filter directly. This
+// can best be understood by working through an example by hand with
+// radius=3, and keeping the pixel values symbolic.
+
+// In order to match this behavior, we generate special-case weights for
+// pixels near the edge. These weights depend both on the radius and the
+// distance of the output pixel from the edge. So edge_weights[R][X][XI]
+// gives the contribution of the pixel XI from the edge, to the result X from
+// the edge, with radius R.
+
 #include "weights.h"
 
 template <class ImageT>
-__global__ void horizontal_precomputed_gaussian_blur_kernel(
-    ImageT* dest, const ImageT* source, image_dims dims, int radius) {
+__global__ void horizontal_precomputed_blur_kernel(ImageT* dest,
+                                                   const ImageT* source,
+                                                   image_dims dims,
+                                                   int radius) {
+  using TempT = typename temp_type<ImageT>::type;
   int y = cuda_index_y();
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    auto sum = get_pixel(source, dims, x, y) * weights[radius][0];
-    for (int xi = x - radius; xi < x; xi++) {
-      int dx = x - xi;
-      float w = weights[radius][dx];
-      sum += get_pixel(source, dims, max(xi, 0), y) * w;
-    }
-    for (int xi = x + 1; xi < x + radius + 1; xi++) {
-      int dx = xi - x;
-      float w = weights[radius][dx];
-      sum += get_pixel(source, dims, min(xi, int(dims.width - 1)), y) * w;
-    }
+    auto sum = black<TempT>();
+    if (x < radius) {
+      // Special case for the left edge. Use the different weights to match
+      // the quirks for the iterated box blur.
 
+      // The first radius pixels need special weights
+      for (int xi = 0; xi < radius; xi++) {
+        float w = edge_weights[radius][x][xi];
+        sum += get_pixel(source, dims, xi, y) * w;
+      }
+      // After that we proceed with normal weights
+      for (int xi = radius; xi < x + radius + 1; xi++) {
+        int dx = xi - x;
+        float w = weights[radius][dx];
+        sum += get_pixel(source, dims, min(xi, int(dims.width - 1)), y) * w;
+      }
+    } else if (x >= dims.width - radius) {
+      // Special case for the right edge. This is essentially the same as the
+      // left edge case, but we have to flip some indices around to compute
+      // distances from the edge.
+      int edge_start = dims.width - radius;
+      int ei = (dims.width - 1) - x;
+
+      // Normal weights
+      for (int xi = x - radius; xi < edge_start; xi++) {
+        int dx = x - xi;
+        float w = weights[radius][dx];
+        sum += get_pixel(source, dims, max(xi, 0), y) * w;
+      }
+      // Special edge case
+      for (int xi = edge_start; xi < dims.width; xi++) {
+        float w = edge_weights[radius][ei][(dims.width - 1) - xi];
+        sum += get_pixel(source, dims, xi, y) * w;
+      }
+    } else {
+      sum = get_pixel(source, dims, x, y) * weights[radius][0];
+      for (int xi = x - radius; xi < x; xi++) {
+        int dx = x - xi;
+        float w = weights[radius][dx];
+        sum += get_pixel(source, dims, max(xi, 0), y) * w;
+      }
+      for (int xi = x + 1; xi < x + radius + 1; xi++) {
+        int dx = xi - x;
+        float w = weights[radius][dx];
+        sum += get_pixel(source, dims, min(xi, int(dims.width - 1)), y) * w;
+      }
+    }
     set_pixel(dest, dims, x, y, sum);
   }
 }
 
+// This is essentially the same as the horiztonal kernel above, but with x/y
+// swapped.
 template <class ImageT>
-__global__ void vertical_precomputed_gaussian_blur_kernel(ImageT* dest,
-                                                          const ImageT* source,
-                                                          image_dims dims,
-                                                          int radius) {
+__global__ void vertical_precomputed_blur_kernel(ImageT* dest,
+                                                 const ImageT* source,
+                                                 image_dims dims, int radius) {
+  using TempT = typename temp_type<ImageT>::type;
   int y = cuda_index_y();
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    auto sum = get_pixel(source, dims, x, y) * weights[radius][0];
-    for (int yi = y - radius; yi < y; yi++) {
-      int dy = y - yi;
-      float w = weights[radius][dy];
-      sum += get_pixel(source, dims, x, max(yi, 0)) * w;
-    }
-    for (int yi = y + 1; yi < y + radius + 1; yi++) {
-      int dy = yi - y;
-      float w = weights[radius][dy];
-      sum += get_pixel(source, dims, x, min(yi, int(dims.height - 1))) * w;
-    }
+    auto sum = black<TempT>();
+    if (y < radius) {
+      // Special edge case
+      for (int yi = 0; yi < radius; yi++) {
+        float w = edge_weights[radius][y][yi];
+        sum += get_pixel(source, dims, x, yi) * w;
+      }
+      // Normal weights
+      for (int yi = radius; yi < y + radius + 1; yi++) {
+        int dy = yi - y;
+        float w = weights[radius][dy];
+        sum += get_pixel(source, dims, x, min(yi, int(dims.height - 1))) * w;
+      }
+    } else if (y >= dims.height - radius) {
+      int edge_start = dims.height - radius;
+      int ei = (dims.height - 1) - y;
 
+      // Normal weights
+      for (int yi = y - radius; yi < edge_start; yi++) {
+        int dy = y - yi;
+        float w = weights[radius][dy];
+        sum += get_pixel(source, dims, x, max(yi, 0)) * w;
+      }
+      // Special edge case
+      for (int yi = edge_start; yi < dims.height; yi++) {
+        float w = edge_weights[radius][ei][(dims.height - 1) - yi];
+        sum += get_pixel(source, dims, x, yi) * w;
+      }
+    } else {
+      sum = get_pixel(source, dims, x, y) * weights[radius][0];
+      for (int yi = y - radius; yi < y; yi++) {
+        int dy = y - yi;
+        float w = weights[radius][dy];
+        sum += get_pixel(source, dims, x, max(yi, 0)) * w;
+      }
+
+      for (int yi = y + 1; yi < y + radius + 1; yi++) {
+        int dy = yi - y;
+        float w = weights[radius][dy];
+        sum += get_pixel(source, dims, x, min(yi, int(dims.height - 1))) * w;
+      }
+    }
     set_pixel(dest, dims, x, y, sum);
   }
 }
@@ -435,8 +530,8 @@ void precomputed_gaussian_blur(ImageT* dest, const ImageT* source, ImageT* temp,
 
   assert(radius <= MAX_PRECOMPUTED_RADIUS);
 
-  horizontal_precomputed_gaussian_blur_kernel<<<grid_dim, BLOCK_DIM>>>(
-      temp, source, dims, radius);
-  vertical_precomputed_gaussian_blur_kernel<<<grid_dim, BLOCK_DIM>>>(
-      dest, temp, dims, radius);
+  horizontal_precomputed_blur_kernel<<<grid_dim, BLOCK_DIM>>>(temp, source,
+                                                              dims, radius);
+  vertical_precomputed_blur_kernel<<<grid_dim, BLOCK_DIM>>>(dest, temp, dims,
+                                                            radius);
 }
