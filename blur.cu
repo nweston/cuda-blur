@@ -101,16 +101,21 @@ __device__ static float2& operator-=(float2& a, const float2& b) {
 }
 // ===== General Utilities =====
 
-#define cudaCheckError(code)                                         \
-  {                                                                  \
-    if ((code) != cudaSuccess) {                                     \
-      handleCudaError(__FILE__, __LINE__, cudaGetErrorString(code)); \
-    }                                                                \
+#define cudaCheckError(code)                                           \
+  {                                                                    \
+    if ((code) != cudaSuccess) {                                       \
+      handle_cuda_error(__FILE__, __LINE__, cudaGetErrorString(code)); \
+    }                                                                  \
   }
 
-void handleCudaError(const char* file, int line, const char* error) {
+void default_error_handler(const char* file, int line, const char* error) {
   std::cerr << "CUDA failure " << file << ":" << line << " " << error << "\n";
 }
+
+// Called whenever a CUDA function returns an error. Reassign to provide your
+// own error handling.
+using error_handler_t = void (*)(const char*, int, const char*);
+error_handler_t handle_cuda_error = &default_error_handler;
 
 static int n_blocks(int threads, int block_size, int outputs_per_thread = 1) {
   int block_outputs = block_size * outputs_per_thread;
