@@ -133,15 +133,15 @@ __device__ static int cuda_index_y() {
 
 template <class ImageT>
 __device__ static typename temp_type<ImageT>::type get_pixel(
-    const ImageT* image, const image_dims& dims, int x, int y) {
-  return to_temp(image[pixel_index(dims, x, y)]);
+    const ImageT* image, int pixel_index) {
+  return to_temp(image[pixel_index]);
 }
 
 template <class ImageT>
 __device__ static void set_pixel(
-    ImageT* image, const image_dims& dims, int x, int y,
+    ImageT* image, int pixel_index,
     const typename temp_type<ImageT>::type& value) {
-  image[pixel_index(dims, x, y)] = from_temp<ImageT>(value);
+  image[pixel_index] = from_temp<ImageT>(value);
 }
 
 // ===== Transpose =====
@@ -169,6 +169,8 @@ void transpose(ImageT* dest, const ImageT* source, image_dims dims) {
 }
 
 // ===== Blur functions =====
+
+// Vertical box blur, using the sliding window method.
 template <class ImageT>
 __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
                                          image_dims dims, int radius) {
@@ -187,15 +189,15 @@ __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
 
     // Fill initial box, repeating the edge pixel
     if (y_start == 0) {
-      TempT edge = get_pixel(source, dims, x, 0);
+      TempT edge = get_pixel(source, pixel_index(dims, x, 0));
       sum = edge * (radius + 1);
       for (int y = 1; y < radius + 1; y++) {
-        sum += get_pixel(source, dims, x, y);
+        sum += get_pixel(source, pixel_index(dims, x, y));
       }
     } else {
       sum = black<TempT>();
       for (int y = y_start - radius; y < y_start + radius + 1; y++) {
-        sum += get_pixel(source, dims, x, max(y, 0));
+        sum += get_pixel(source, pixel_index(dims, x, max(y, 0)));
       }
     }
 
@@ -203,58 +205,62 @@ __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
     int top = y_start - radius;
     int bottom = y_start + radius;
     for (int y = y_start; y < y_limit; y++) {
-      set_pixel(dest, dims, x, y, sum * scale);
+      set_pixel(dest, pixel_index(dims, x, y), sum * scale);
 
       // Shift the box
-      sum -= get_pixel(source, dims, x, max(top, 0));
+      sum -= get_pixel(source, pixel_index(dims, x, max(top, 0)));
       top++;
       bottom++;
-      sum += get_pixel(source, dims, x, min(bottom, int(dims.height - 1)));
+      sum += get_pixel(source,
+                       pixel_index(dims, x, min(bottom, int(dims.height - 1))));
     }
   }
 }
 
-// Vertical box blur, implemented by direct convolution instead of sliding
-// window method.
-template <class ImageT>
-__global__ void vertical_direct_box_blur_kernel(ImageT* dest,
-                                                const ImageT* source,
-                                                image_dims dims, int radius) {
-  int y = cuda_index_y();
+// Box blur, implemented by direct convolution, for a single pixel.
+// This uses a 1D index and can perform a horizontal or vertical blur. The
+// indexer function takes an index value, supplies the missing coordinate
+// (which is constant), and converts that to a pixel index.
+template <class ImageT, class IndexerT>
+__device__ void direct_box_blur(ImageT* dest, const ImageT* source,
+                                size_t x_limit, int radius, int x,
+                                IndexerT indexer) {
   float scale = 1.0f / (2 * radius + 1);
 
-  for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    auto sum = get_pixel(source, dims, x, y);
-    for (int yi = y - radius; yi < y; yi++) {
-      sum += get_pixel(source, dims, x, max(yi, 0));
-    }
-    for (int yi = y + 1; yi < y + radius + 1; yi++) {
-      sum += get_pixel(source, dims, x, min(yi, int(dims.height - 1)));
-    }
+  auto sum = get_pixel(source, indexer(x));
+  for (int xi = x - radius; xi < x; xi++) {
+    sum += get_pixel(source, indexer(max(xi, 0)));
+  }
+  for (int xi = x + 1; xi < x + radius + 1; xi++) {
+    sum += get_pixel(source, indexer(min(xi, int(x_limit - 1))));
+  }
 
-    set_pixel(dest, dims, x, y, sum * scale);
+  set_pixel(dest, indexer(x), sum * scale);
+}
+
+template <class ImageT>
+__global__ void horizontal_direct_box_blur_kernel(ImageT* dest,
+                                                  const ImageT* source,
+                                                  image_dims dims, int radius) {
+  int y = cuda_index_y();
+
+  for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
+    direct_box_blur(dest, source, dims.width, radius, x,
+                    [y, &dims](int x) { return pixel_index(dims, x, y); });
   }
 }
 
 // Horizontal box blur, implemented by direct convolution instead of sliding
 // window method.
 template <class ImageT>
-__global__ void horizontal_direct_box_blur_kernel(ImageT* dest,
-                                                  const ImageT* source,
-                                                  image_dims dims, int radius) {
+__global__ void vertical_direct_box_blur_kernel(ImageT* dest,
+                                                const ImageT* source,
+                                                image_dims dims, int radius) {
   int y = cuda_index_y();
-  float scale = 1.0f / (2 * radius + 1);
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    auto sum = get_pixel(source, dims, x, y);
-    for (int xi = x - radius; xi < x; xi++) {
-      sum += get_pixel(source, dims, max(xi, 0), y);
-    }
-    for (int xi = x + 1; xi < x + radius + 1; xi++) {
-      sum += get_pixel(source, dims, min(xi, int(dims.width - 1)), y);
-    }
-
-    set_pixel(dest, dims, x, y, sum * scale);
+    direct_box_blur(dest, source, dims.height, radius, y,
+                    [x, &dims](int y) { return pixel_index(dims, x, y); });
   }
 }
 
@@ -285,119 +291,87 @@ __global__ void horizontal_direct_box_blur_kernel(ImageT* dest,
 
 #include "weights.h"
 
+// Pre-computed blur for a single pixel.
+// This uses a 1D index and can perform a horizontal or vertical blur. The
+// indexer function takes an index value, supplies the missing coordinate
+// (which is constant), and converts that to a pixel index.
+template <class ImageT, class IndexerT>
+__device__ void precomputed_blur(ImageT* dest, const ImageT* source,
+                                 size_t x_limit, int radius, int x,
+                                 IndexerT indexer) {
+  using TempT = typename temp_type<ImageT>::type;
+  auto sum = black<TempT>();
+  if (x < radius) {
+    // Special case for the left edge. Use the different weights to match
+    // the quirks for the iterated box blur.
+
+    // The first radius pixels need special weights
+    for (int xi = 0; xi < radius; xi++) {
+      float w = edge_weights[radius][x][xi];
+      sum += get_pixel(source, indexer(xi)) * w;
+    }
+    // After that we proceed with normal weights
+    for (int xi = radius; xi < x + radius + 1; xi++) {
+      int dx = xi - x;
+      float w = weights[radius][dx];
+      sum += get_pixel(source, indexer(min(xi, int(x_limit - 1)))) * w;
+    }
+  } else if (x >= x_limit - radius) {
+    // Special case for the right edge. This is essentially the same as the
+    // left edge case, but we have to flip some indices around to compute
+    // distances from the edge.
+    int edge_start = x_limit - radius;
+    int ei = (x_limit - 1) - x;
+
+    // Normal weights
+    for (int xi = x - radius; xi < edge_start; xi++) {
+      int dx = x - xi;
+      float w = weights[radius][dx];
+      sum += get_pixel(source, indexer(max(xi, 0))) * w;
+    }
+    // Special edge case
+    for (int xi = edge_start; xi < x_limit; xi++) {
+      float w = edge_weights[radius][ei][(x_limit - 1) - xi];
+      sum += get_pixel(source, indexer(xi)) * w;
+    }
+  } else {
+    sum = get_pixel(source, indexer(x)) * weights[radius][0];
+    for (int xi = x - radius; xi < x; xi++) {
+      int dx = x - xi;
+      float w = weights[radius][dx];
+      sum += get_pixel(source, indexer(max(xi, 0))) * w;
+    }
+    for (int xi = x + 1; xi < x + radius + 1; xi++) {
+      int dx = xi - x;
+      float w = weights[radius][dx];
+      sum += get_pixel(source, indexer(min(xi, int(x_limit - 1)))) * w;
+    }
+  }
+  set_pixel(dest, indexer(x), sum);
+}
+
 template <class ImageT>
 __global__ void horizontal_precomputed_blur_kernel(ImageT* dest,
                                                    const ImageT* source,
                                                    image_dims dims,
                                                    int radius) {
-  using TempT = typename temp_type<ImageT>::type;
   int y = cuda_index_y();
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    auto sum = black<TempT>();
-    if (x < radius) {
-      // Special case for the left edge. Use the different weights to match
-      // the quirks for the iterated box blur.
-
-      // The first radius pixels need special weights
-      for (int xi = 0; xi < radius; xi++) {
-        float w = edge_weights[radius][x][xi];
-        sum += get_pixel(source, dims, xi, y) * w;
-      }
-      // After that we proceed with normal weights
-      for (int xi = radius; xi < x + radius + 1; xi++) {
-        int dx = xi - x;
-        float w = weights[radius][dx];
-        sum += get_pixel(source, dims, min(xi, int(dims.width - 1)), y) * w;
-      }
-    } else if (x >= dims.width - radius) {
-      // Special case for the right edge. This is essentially the same as the
-      // left edge case, but we have to flip some indices around to compute
-      // distances from the edge.
-      int edge_start = dims.width - radius;
-      int ei = (dims.width - 1) - x;
-
-      // Normal weights
-      for (int xi = x - radius; xi < edge_start; xi++) {
-        int dx = x - xi;
-        float w = weights[radius][dx];
-        sum += get_pixel(source, dims, max(xi, 0), y) * w;
-      }
-      // Special edge case
-      for (int xi = edge_start; xi < dims.width; xi++) {
-        float w = edge_weights[radius][ei][(dims.width - 1) - xi];
-        sum += get_pixel(source, dims, xi, y) * w;
-      }
-    } else {
-      sum = get_pixel(source, dims, x, y) * weights[radius][0];
-      for (int xi = x - radius; xi < x; xi++) {
-        int dx = x - xi;
-        float w = weights[radius][dx];
-        sum += get_pixel(source, dims, max(xi, 0), y) * w;
-      }
-      for (int xi = x + 1; xi < x + radius + 1; xi++) {
-        int dx = xi - x;
-        float w = weights[radius][dx];
-        sum += get_pixel(source, dims, min(xi, int(dims.width - 1)), y) * w;
-      }
-    }
-    set_pixel(dest, dims, x, y, sum);
+    precomputed_blur(dest, source, dims.width, radius, x,
+                     [y, &dims](int x) { return pixel_index(dims, x, y); });
   }
 }
 
-// This is essentially the same as the horiztonal kernel above, but with x/y
-// swapped.
 template <class ImageT>
 __global__ void vertical_precomputed_blur_kernel(ImageT* dest,
                                                  const ImageT* source,
                                                  image_dims dims, int radius) {
-  using TempT = typename temp_type<ImageT>::type;
   int y = cuda_index_y();
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    auto sum = black<TempT>();
-    if (y < radius) {
-      // Special edge case
-      for (int yi = 0; yi < radius; yi++) {
-        float w = edge_weights[radius][y][yi];
-        sum += get_pixel(source, dims, x, yi) * w;
-      }
-      // Normal weights
-      for (int yi = radius; yi < y + radius + 1; yi++) {
-        int dy = yi - y;
-        float w = weights[radius][dy];
-        sum += get_pixel(source, dims, x, min(yi, int(dims.height - 1))) * w;
-      }
-    } else if (y >= dims.height - radius) {
-      int edge_start = dims.height - radius;
-      int ei = (dims.height - 1) - y;
-
-      // Normal weights
-      for (int yi = y - radius; yi < edge_start; yi++) {
-        int dy = y - yi;
-        float w = weights[radius][dy];
-        sum += get_pixel(source, dims, x, max(yi, 0)) * w;
-      }
-      // Special edge case
-      for (int yi = edge_start; yi < dims.height; yi++) {
-        float w = edge_weights[radius][ei][(dims.height - 1) - yi];
-        sum += get_pixel(source, dims, x, yi) * w;
-      }
-    } else {
-      sum = get_pixel(source, dims, x, y) * weights[radius][0];
-      for (int yi = y - radius; yi < y; yi++) {
-        int dy = y - yi;
-        float w = weights[radius][dy];
-        sum += get_pixel(source, dims, x, max(yi, 0)) * w;
-      }
-
-      for (int yi = y + 1; yi < y + radius + 1; yi++) {
-        int dy = yi - y;
-        float w = weights[radius][dy];
-        sum += get_pixel(source, dims, x, min(yi, int(dims.height - 1))) * w;
-      }
-    }
-    set_pixel(dest, dims, x, y, sum);
+    precomputed_blur(dest, source, dims.height, radius, y,
+                     [x, &dims](int y) { return pixel_index(dims, x, y); });
   }
 }
 
