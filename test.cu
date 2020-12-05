@@ -2,6 +2,7 @@
 
 #include <nppi_filtering_functions.h>
 #include <algorithm>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -315,6 +316,93 @@ static int run_checks(float4* pixels, image_dims dims) {
 }
 
 template <class T>
+void run_benchmark_2(size_t width, size_t height, size_t channel_count,
+                     size_t sizeof_channel) {
+  size_t stride_bytes =
+      (width * sizeof(T) + CUDA_ALIGN - 1) / CUDA_ALIGN * CUDA_ALIGN;
+
+  image_dims dims = {width, height, channel_count, sizeof_channel,
+                     stride_bytes / sizeof(T)};
+
+  auto source = cuda_malloc_unique<T>(allocated_bytes(dims));
+  auto dest = cuda_malloc_unique<T>(allocated_bytes(dims));
+  auto temp = cuda_malloc_unique<T>(allocated_bytes(dims));
+
+  // All black is fine: we don't care about results. We just don't want
+  // accidental NaNs or infinities in case those have weird side effects.
+  cudaCheckError(cudaMemset(source.get(), 0, allocated_bytes(dims)));
+
+  std::vector<int> radii{1, 3, 5, 10, 15, 20, 25, 30, 50, 75, 100, 200};
+  for (auto radius : radii) {
+    std::cout << "radius " << radius << "\n";
+    std::string best_name;
+    float best_time = std::numeric_limits<float>::infinity();
+
+    auto run = [&](auto name, auto callback) {
+      float time = timeit(name, callback);
+      if (time < best_time) {
+        best_name = name;
+        best_time = time;
+      }
+    };
+
+    if (radius <= MAX_PRECOMPUTED_RADIUS) {
+      for (int outputs = 1; outputs <= 4; outputs++) {
+        run("precomputed " + std::to_string(outputs), [&]() {
+          precomputed_gaussian_blur(dest.get(), source.get(), temp.get(), dims,
+                                    radius, outputs);
+        });
+      }
+    }
+
+    for (int outputs = 1; outputs <= 4; outputs++) {
+      run("direct " + std::to_string(outputs), [&]() {
+        direct_blur_no_transpose(dest.get(), source.get(), temp.get(), dims,
+                                 radius, 3, outputs);
+      });
+    }
+
+    for (int outputs_v = 1; outputs_v <= 4; outputs_v++) {
+      for (int outputs_h = 1; outputs_h <= 4; outputs_h++) {
+        for (int threads_v = 1; threads_v <= 4; threads_v++) {
+          for (int threads_h = 1; threads_h <= 4; threads_h++) {
+            run("standard " + std::to_string(outputs_v) +
+                    std::to_string(outputs_h) + std::to_string(threads_v) +
+                    std::to_string(threads_h),
+                [&]() {
+                  smooth_blur(dest.get(), source.get(), temp.get(), dims,
+                              radius, 3, outputs_v, outputs_h, threads_v,
+                              threads_h);
+                });
+          }
+        }
+      }
+    }
+    std::cout << "fastest: " << best_name << " " << best_time << " ms\n\n";
+  }
+}
+
+static void run_benchmark_1(int width, int height) {
+  std::cout << width << "x" << height << "\n";
+  std::cout << "float4\n";
+  run_benchmark_2<float4>(width, height, 4, sizeof(float));
+  std::cout << "\nfloat2\n";
+  run_benchmark_2<float2>(width, height, 2, sizeof(float));
+  std::cout << "\nfloat\n";
+  run_benchmark_2<float>(width, height, 1, sizeof(float));
+  std::cout << "\nhalf4\n";
+  run_benchmark_2<half4>(width, height, 4, sizeof(half));
+  std::cout << "\nhalf2\n";
+  run_benchmark_2<half2>(width, height, 2, sizeof(half));
+}
+
+static void run_benchmark() {
+  run_benchmark_1(720, 540);
+  run_benchmark_1(1920, 1080);
+  run_benchmark_1(3840, 2160);
+}
+
+template <class T>
 void convert_and_test(float4* pixels, image_dims dims, int radius, int n_passes,
                       int channel_count, size_t sizeof_channel,
                       const std::string& label) {
@@ -343,6 +431,7 @@ int main(int argc, char** argv) {
   bool do_direct = false;
   bool do_gaussian = false;
   bool do_check = false;
+  bool do_benchmark = false;
   bool do_float2 = false;
   bool do_float = false;
   bool do_half4 = false;
@@ -363,6 +452,8 @@ int main(int argc, char** argv) {
       do_gaussian = true;
     else if (a == "-check")
       do_check = true;
+    else if (a == "-benchmark")
+      do_benchmark = true;
     else if (a == "-float2")
       do_float2 = true;
     else if (a == "-float")
@@ -373,6 +464,12 @@ int main(int argc, char** argv) {
       do_half2 = true;
     else
       args.push_back(a);
+  }
+
+  if (do_benchmark) {
+    // No other arguments required
+    run_benchmark();
+    return 0;
   }
 
   int radius = (args.size() > 2) ? std::stoi(args[2]) : 5;

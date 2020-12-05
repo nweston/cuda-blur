@@ -8,8 +8,8 @@
 // Calls cudaDeviceSynchronize() before stopping the timer to ensure any
 // running kernels are finished.
 template <class T>
-void timeit(const std::string &name, T function,
-            std::ostream &out = std::cout) {
+float timeit(const std::string &name, T function,
+             std::ostream &out = std::cout) {
   const int RUNS = 50;
   auto total_time = std::chrono::milliseconds(0);
 
@@ -23,5 +23,7 @@ void timeit(const std::string &name, T function,
         std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
   }
 
-  out << name << ": " << total_time.count() / float(RUNS) << " ms\n";
+  float average_ms = total_time.count() / float(RUNS);
+  out << name << ": " << average_ms << " ms\n";
+  return average_ms;
 }
