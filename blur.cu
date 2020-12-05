@@ -243,6 +243,8 @@ __global__ void horizontal_direct_box_blur_kernel(ImageT* dest,
                                                   const ImageT* source,
                                                   image_dims dims, int radius) {
   int y = cuda_index_y();
+  if (y >= dims.height)
+    return;
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
     direct_box_blur(dest, source, dims.width, radius, x,
@@ -257,6 +259,8 @@ __global__ void vertical_direct_box_blur_kernel(ImageT* dest,
                                                 const ImageT* source,
                                                 image_dims dims, int radius) {
   int y = cuda_index_y();
+  if (y >= dims.height)
+    return;
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
     direct_box_blur(dest, source, dims.height, radius, y,
@@ -356,6 +360,8 @@ __global__ void horizontal_precomputed_blur_kernel(ImageT* dest,
                                                    image_dims dims,
                                                    int radius) {
   int y = cuda_index_y();
+  if (y >= dims.height)
+    return;
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
     precomputed_blur(dest, source, dims.width, radius, x,
@@ -368,6 +374,8 @@ __global__ void vertical_precomputed_blur_kernel(ImageT* dest,
                                                  const ImageT* source,
                                                  image_dims dims, int radius) {
   int y = cuda_index_y();
+  if (y >= dims.height)
+    return;
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
     precomputed_blur(dest, source, dims.height, radius, y,
