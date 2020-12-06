@@ -170,12 +170,46 @@ void transpose(ImageT* dest, const ImageT* source, image_dims dims) {
 
 // ===== Blur functions =====
 
+template <class ImageT, class IndexerT>
+__device__ void sliding_window_blur(ImageT* dest, const ImageT* source,
+                                    int y_start, int y_limit, int y_dim,
+                                    int radius, IndexerT indexer) {
+  using TempT = typename temp_type<ImageT>::type;
+  TempT sum;
+  float scale = 1.0f / (2 * radius + 1);
+
+  // Fill initial box, repeating the edge pixel
+  if (y_start == 0) {
+    TempT edge = get_pixel(source, indexer(0));
+    sum = edge * (radius + 1);
+    for (int y = 1; y < radius + 1; y++) {
+      sum += get_pixel(source, indexer(y));
+    }
+  } else {
+    sum = black<TempT>();
+    for (int y = y_start - radius; y < y_start + radius + 1; y++) {
+      sum += get_pixel(source, indexer(max(y, 0)));
+    }
+  }
+
+  // Compute result pixels
+  int top = y_start - radius;
+  int bottom = y_start + radius;
+  for (int y = y_start; y < y_limit; y++) {
+    set_pixel(dest, indexer(y), sum * scale);
+
+    // Shift the box
+    sum -= get_pixel(source, indexer(max(top, 0)));
+    top++;
+    bottom++;
+    sum += get_pixel(source, indexer(min(bottom, int(y_dim - 1))));
+  }
+}
+
 // Vertical box blur, using the sliding window method.
 template <class ImageT>
 __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
                                          image_dims dims, int radius) {
-  using TempT = typename temp_type<ImageT>::type;
-
   // Split each column into vertical slices
   int n_slices = blockDim.y;
   int slice_height = (dims.height + n_slices - 1) / n_slices;
@@ -185,35 +219,48 @@ __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
   float scale = 1.0f / (2 * radius + 1);
 
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    TempT sum;
+    sliding_window_blur(dest, source, y_start, y_limit, dims.height, radius,
+                        [x, &dims](int y) { return pixel_index(dims, x, y); });
+  }
+}
 
-    // Fill initial box, repeating the edge pixel
-    if (y_start == 0) {
-      TempT edge = get_pixel(source, pixel_index(dims, x, 0));
-      sum = edge * (radius + 1);
-      for (int y = 1; y < radius + 1; y++) {
-        sum += get_pixel(source, pixel_index(dims, x, y));
-      }
-    } else {
-      sum = black<TempT>();
-      for (int y = y_start - radius; y < y_start + radius + 1; y++) {
-        sum += get_pixel(source, pixel_index(dims, x, max(y, 0)));
-      }
+template <class ImageT>
+__global__ void repeated_vertical_box_blur_kernel(ImageT* dest,
+                                                  const ImageT* source,
+                                                  ImageT* temp, image_dims dims,
+                                                  int radius, int n_passes) {
+  float scale = 1.0f / (2 * radius + 1);
+  n_passes = min(n_passes, radius);
+
+  for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
+    const ImageT* from = source;
+    // FIXME: only works for 3 passes
+    ImageT* toBuffers[] = {dest, temp, dest};
+
+    int remaining = radius;
+    for (int i = 0; i < n_passes; i++) {
+      ImageT* to = toBuffers[i];
+      int this_radius = remaining / (n_passes - i);
+      remaining -= this_radius;
+
+      sliding_window_blur(
+          to, from, 0, dims.height, dims.height, this_radius,
+          [x, &dims](int y) { return pixel_index(dims, x, y); });
+
+      from = to;
     }
+  }
+}
 
-    // Compute result pixels
-    int top = y_start - radius;
-    int bottom = y_start + radius;
-    for (int y = y_start; y < y_limit; y++) {
-      set_pixel(dest, pixel_index(dims, x, y), sum * scale);
+template <class ImageT>
+__global__ void horizontal_box_blur_kernel(ImageT* dest, const ImageT* source,
+                                           image_dims dims, int radius) {
+  float scale = 1.0f / (2 * radius + 1);
 
-      // Shift the box
-      sum -= get_pixel(source, pixel_index(dims, x, max(top, 0)));
-      top++;
-      bottom++;
-      sum += get_pixel(source,
-                       pixel_index(dims, x, min(bottom, int(dims.height - 1))));
-    }
+  for (int y = cuda_index_x(); y < dims.height; y += blockDim.x * gridDim.x) {
+    sliding_window_blur_kernel(
+        dest, source, 0, dims.width, dims.width, radius,
+        [y, &dims](int x) { return pixel_index(dims, x, y); });
   }
 }
 
@@ -450,6 +497,44 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
             {dims.height, dims.stride_pixels, dims.channel_count,
              dims.sizeof_channel, dims.height});
   assert(to == dest);
+}
+
+// Repeated box blur with the sliding window method, with multiple blur
+// passes per kernel launch. This might give better cache performance by
+// processing the same column multiple times in a row.
+template <class ImageT>
+void single_kernel_blur(ImageT* dest, const ImageT* source, ImageT* temp,
+                        image_dims dims, int radius, int n_passes,
+                        int outputs_per_thread_v = 1,
+                        int outputs_per_thread_h = 1) {
+  const int BLOCK_WIDTH = 32;
+
+  // Vertical blur
+  {
+    int grid_dim = n_blocks(dims.width, BLOCK_WIDTH, outputs_per_thread_v);
+    repeated_vertical_box_blur_kernel<<<grid_dim, BLOCK_WIDTH>>>(
+        temp, source, dest, dims, radius, n_passes);
+  }
+
+  transpose(dest, temp, dims);
+
+  // Horizontal blur
+  {
+    // Transpose turns any horizontal padding into vertical padding. Ignore
+    // those extra pixels when blurring.
+    image_dims transpose_dims = {dims.height, dims.width, dims.channel_count,
+                                 dims.sizeof_channel, dims.height};
+    int grid_dim =
+        n_blocks(transpose_dims.width, BLOCK_WIDTH, outputs_per_thread_h);
+    repeated_vertical_box_blur_kernel<<<grid_dim, BLOCK_WIDTH>>>(
+        temp, dest, dest, transpose_dims, radius, n_passes);
+  }
+
+  // Transpose back to the original format. This version of the dims includes
+  // the extra height.
+  transpose(dest, temp,
+            {dims.height, dims.stride_pixels, dims.channel_count,
+             dims.sizeof_channel, dims.height});
 }
 
 // Use horizontal and vertical direct blur kernels, without transposing.

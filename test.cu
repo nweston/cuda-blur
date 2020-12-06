@@ -237,6 +237,11 @@ static void run_checks_internal(T* pixels, image_dims dims,
                       n_passes, outputs_v, outputs_h, 1, 1);
           check_result("outputs " + std::to_string(outputs_v) +
                        std::to_string(outputs_h));
+
+          single_kernel_blur(dest.get(), source.get(), temp.get(), dims, radius,
+                             n_passes, outputs_h, outputs_v);
+          check_result("single " + std::to_string(outputs_v) +
+                       std::to_string(outputs_h));
         }
       }
 
@@ -364,6 +369,12 @@ void run_benchmark_2(size_t width, size_t height, size_t channel_count,
 
     for (int outputs_v = 1; outputs_v <= 4; outputs_v++) {
       for (int outputs_h = 1; outputs_h <= 4; outputs_h++) {
+        run("single " + std::to_string(outputs_v) + std::to_string(outputs_h),
+            [&]() {
+              single_kernel_blur(dest.get(), source.get(), temp.get(), dims,
+                                 radius, 3, outputs_h, outputs_v);
+            });
+
         for (int threads_v = 1; threads_v <= 4; threads_v++) {
           for (int threads_h = 1; threads_h <= 4; threads_h++) {
             run("standard " + std::to_string(outputs_v) +
@@ -430,6 +441,7 @@ int main(int argc, char** argv) {
   bool do_npp = false;
   bool do_direct = false;
   bool do_gaussian = false;
+  bool do_single_kernel = false;
   bool do_check = false;
   bool do_benchmark = false;
   bool do_float2 = false;
@@ -450,6 +462,8 @@ int main(int argc, char** argv) {
       do_direct = true;
     else if (a == "-gaussian")
       do_gaussian = true;
+    else if (a == "-single-kernel")
+      do_single_kernel = true;
     else if (a == "-check")
       do_check = true;
     else if (a == "-benchmark")
@@ -532,6 +546,13 @@ int main(int argc, char** argv) {
     timeit("gaussian", [&]() {
       precomputed_gaussian_blur(dest.get(), source.get(), temp.get(), dims,
                                 radius, 2);
+    });
+  }
+
+  if (do_single_kernel) {
+    timeit("single kernel", [&]() {
+      single_kernel_blur(dest.get(), source.get(), temp.get(), dims, radius,
+                         n_passes, 1, 1);
     });
   }
 
