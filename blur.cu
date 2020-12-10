@@ -286,44 +286,30 @@ __global__ void staggered_vertical_box_blur_kernel(ImageT* dest,
     float scale1 = 1.0f / (2 * r1 + 1);
     float scale2 = 1.0f / (2 * r2 + 1);
 
-    // TODO: possibly use different indexers to consolidate offsets?
-    // TODO: possibly merge loops
     auto indexer = [x, &dims](int y) { return pixel_index(dims, x, y); };
     auto sum0 = initial_sum(s0, dims.height, r0, indexer);
+    decltype(sum0) sum1;
+    decltype(sum0) sum2;
 
-    for (int y = 0; y < offset1; y++) {
-      set_pixel(d0, indexer(y), sum0 * scale0);
-      shift_box(sum0, s0, dims.height, r0, y, indexer);
-    }
-
-    auto sum1 = initial_sum(s1, dims.height, r1, indexer);
-    for (int y = r0; y < offset2; y++) {
-      set_pixel(d0, indexer(y), sum0 * scale0);
-      shift_box(sum0, s0, dims.height, r0, y, indexer);
-      set_pixel(d1, indexer(y - offset1), sum1 * scale1);
-      shift_box(sum1, s1, dims.height, r1, y - offset1, indexer);
-    }
-
-    auto sum2 = initial_sum(s2, dims.height, r2, indexer);
-    for (int y = offset2; y < dims.height; y++) {
-      set_pixel(d0, indexer(y), sum0 * scale0);
-      shift_box(sum0, s0, dims.height, r0, y, indexer);
-      set_pixel(d1, indexer(y - offset1), sum1 * scale1);
-      shift_box(sum1, s1, dims.height, r1, y - offset1, indexer);
-      set_pixel(d2, indexer(y - offset2), sum2 * scale2);
-      shift_box(sum2, s2, dims.height, r2, y - offset2, indexer);
-    }
-
-    for (int y = dims.height; y < dims.height + offset1; y++) {
-      set_pixel(d1, indexer(y - offset1), sum1 * scale1);
-      shift_box(sum1, s1, dims.height, r1, y - offset1, indexer);
-      set_pixel(d2, indexer(y - offset2), sum2 * scale2);
-      shift_box(sum2, s2, dims.height, r2, y - offset2, indexer);
-    }
-
-    for (int y = dims.height + offset1; y < dims.height + offset2; y++) {
-      set_pixel(d2, indexer(y - offset2), sum2 * scale2);
-      shift_box(sum2, s2, dims.height, r2, y - offset2, indexer);
+    for (int y = 0; y < dims.height + offset2; y++) {
+      int y1 = y - offset1;
+      int y2 = y - offset2;
+      if (y < dims.height) {
+        set_pixel(d0, indexer(y), sum0 * scale0);
+        shift_box(sum0, s0, dims.height, r0, y, indexer);
+      }
+      if (y1 == 0)
+        sum1 = initial_sum(s1, dims.height, r1, indexer);
+      if (y1 >= 0 && y1 < dims.height) {
+        set_pixel(d1, indexer(y1), sum1 * scale1);
+        shift_box(sum1, s1, dims.height, r1, y1, indexer);
+      }
+      if (y2 == 0)
+        sum2 = initial_sum(s2, dims.height, r2, indexer);
+      if (y2 >= 0 && y2 < dims.height) {
+        set_pixel(d2, indexer(y2), sum2 * scale2);
+        shift_box(sum2, s2, dims.height, r2, y2, indexer);
+      }
     }
   }
 }
