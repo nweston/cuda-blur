@@ -170,6 +170,26 @@ void transpose(ImageT* dest, const ImageT* source, image_dims dims) {
 
 // ===== Blur functions =====
 
+// Compute the initial sum at the edge of the image
+template <class ImageT, class IndexerT>
+__device__ auto initial_sum(const ImageT* source, int y_dim, int radius,
+                            IndexerT indexer) {
+  auto edge = get_pixel(source, indexer(0));
+  auto sum = edge * (radius + 1);
+  for (int y = 1; y < radius + 1; y++) {
+    sum += get_pixel(source, indexer(y));
+  }
+  return sum;
+}
+
+// Shift the box by one pixel
+template <class ImageT, class TempT, class IndexerT>
+__device__ void shift_box(TempT& sum, const ImageT* source, int y_dim,
+                          int radius, int y, IndexerT indexer) {
+  sum -= get_pixel(source, indexer(max(y - radius, 0)));
+  sum += get_pixel(source, indexer(min(y + radius + 1, int(y_dim - 1))));
+}
+
 template <class ImageT, class IndexerT>
 __device__ void sliding_window_blur(ImageT* dest, const ImageT* source,
                                     int y_start, int y_limit, int y_dim,
@@ -180,11 +200,7 @@ __device__ void sliding_window_blur(ImageT* dest, const ImageT* source,
 
   // Fill initial box, repeating the edge pixel
   if (y_start == 0) {
-    TempT edge = get_pixel(source, indexer(0));
-    sum = edge * (radius + 1);
-    for (int y = 1; y < radius + 1; y++) {
-      sum += get_pixel(source, indexer(y));
-    }
+    sum = initial_sum(source, y_dim, radius, indexer);
   } else {
     sum = black<TempT>();
     for (int y = y_start - radius; y < y_start + radius + 1; y++) {
@@ -193,16 +209,9 @@ __device__ void sliding_window_blur(ImageT* dest, const ImageT* source,
   }
 
   // Compute result pixels
-  int top = y_start - radius;
-  int bottom = y_start + radius;
   for (int y = y_start; y < y_limit; y++) {
     set_pixel(dest, indexer(y), sum * scale);
-
-    // Shift the box
-    sum -= get_pixel(source, indexer(max(top, 0)));
-    top++;
-    bottom++;
-    sum += get_pixel(source, indexer(min(bottom, int(y_dim - 1))));
+    shift_box(sum, source, y_dim, radius, y, indexer);
   }
 }
 
