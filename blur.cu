@@ -262,6 +262,73 @@ __global__ void repeated_vertical_box_blur_kernel(ImageT* dest,
 }
 
 template <class ImageT>
+__global__ void staggered_vertical_box_blur_kernel(ImageT* dest,
+                                                   const ImageT* source,
+                                                   ImageT* temp1, ImageT* temp2,
+                                                   image_dims dims,
+                                                   int radius) {
+  for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
+    // Source and dest images for all three passes
+    const ImageT* s0 = source;
+    const ImageT* s1 = temp1;
+    const ImageT* s2 = temp2;
+    ImageT* d0 = temp1;
+    ImageT* d1 = temp2;
+    ImageT* d2 = dest;
+    int r0 = radius / 3;
+    int r1 = (radius - r0) / 2;
+    int r2 = radius - (r0 + r1);
+
+    int offset1 = r1 + 1;
+    int offset2 = offset1 + r2 + 1;
+
+    float scale0 = 1.0f / (2 * r0 + 1);
+    float scale1 = 1.0f / (2 * r1 + 1);
+    float scale2 = 1.0f / (2 * r2 + 1);
+
+    // TODO: possibly use different indexers to consolidate offsets?
+    // TODO: possibly merge loops
+    auto indexer = [x, &dims](int y) { return pixel_index(dims, x, y); };
+    auto sum0 = initial_sum(s0, dims.height, r0, indexer);
+
+    for (int y = 0; y < offset1; y++) {
+      set_pixel(d0, indexer(y), sum0 * scale0);
+      shift_box(sum0, s0, dims.height, r0, y, indexer);
+    }
+
+    auto sum1 = initial_sum(s1, dims.height, r1, indexer);
+    for (int y = r0; y < offset2; y++) {
+      set_pixel(d0, indexer(y), sum0 * scale0);
+      shift_box(sum0, s0, dims.height, r0, y, indexer);
+      set_pixel(d1, indexer(y - offset1), sum1 * scale1);
+      shift_box(sum1, s1, dims.height, r1, y - offset1, indexer);
+    }
+
+    auto sum2 = initial_sum(s2, dims.height, r2, indexer);
+    for (int y = offset2; y < dims.height; y++) {
+      set_pixel(d0, indexer(y), sum0 * scale0);
+      shift_box(sum0, s0, dims.height, r0, y, indexer);
+      set_pixel(d1, indexer(y - offset1), sum1 * scale1);
+      shift_box(sum1, s1, dims.height, r1, y - offset1, indexer);
+      set_pixel(d2, indexer(y - offset2), sum2 * scale2);
+      shift_box(sum2, s2, dims.height, r2, y - offset2, indexer);
+    }
+
+    for (int y = dims.height; y < dims.height + offset1; y++) {
+      set_pixel(d1, indexer(y - offset1), sum1 * scale1);
+      shift_box(sum1, s1, dims.height, r1, y - offset1, indexer);
+      set_pixel(d2, indexer(y - offset2), sum2 * scale2);
+      shift_box(sum2, s2, dims.height, r2, y - offset2, indexer);
+    }
+
+    for (int y = dims.height + offset1; y < dims.height + offset2; y++) {
+      set_pixel(d2, indexer(y - offset2), sum2 * scale2);
+      shift_box(sum2, s2, dims.height, r2, y - offset2, indexer);
+    }
+  }
+}
+
+template <class ImageT>
 __global__ void horizontal_box_blur_kernel(ImageT* dest, const ImageT* source,
                                            image_dims dims, int radius) {
   float scale = 1.0f / (2 * radius + 1);
@@ -542,6 +609,45 @@ void single_kernel_blur(ImageT* dest, const ImageT* source, ImageT* temp,
   // Transpose back to the original format. This version of the dims includes
   // the extra height.
   transpose(dest, temp,
+            {dims.height, dims.stride_pixels, dims.channel_count,
+             dims.sizeof_channel, dims.height});
+}
+
+// Repeated box blur with the sliding window method, with multiple blur
+// passes staggered in a single loop: the second pass starts R pixels behind
+// the first, and the third pass R behind that. This hopefully maximizes
+// cache locality.
+template <class ImageT>
+void staggered_blur(ImageT* dest, const ImageT* source, ImageT* temp1,
+                    ImageT* temp2, ImageT* temp3, image_dims dims, int radius,
+                    int outputs_per_thread_v = 1,
+                    int outputs_per_thread_h = 1) {
+  const int BLOCK_WIDTH = 32;
+
+  // Vertical blur
+  {
+    int grid_dim = n_blocks(dims.width, BLOCK_WIDTH, outputs_per_thread_v);
+    staggered_vertical_box_blur_kernel<<<grid_dim, BLOCK_WIDTH>>>(
+        temp3, source, temp1, temp2, dims, radius);
+  }
+
+  transpose(dest, temp3, dims);
+
+  // Horizontal blur
+  {
+    // Transpose turns any horizontal padding into vertical padding. Ignore
+    // those extra pixels when blurring.
+    image_dims transpose_dims = {dims.height, dims.width, dims.channel_count,
+                                 dims.sizeof_channel, dims.height};
+    int grid_dim =
+        n_blocks(transpose_dims.width, BLOCK_WIDTH, outputs_per_thread_h);
+    staggered_vertical_box_blur_kernel<<<grid_dim, BLOCK_WIDTH>>>(
+        temp3, dest, temp1, temp2, transpose_dims, radius);
+  }
+
+  // Transpose back to the original format. This version of the dims includes
+  // the extra height.
+  transpose(dest, temp3,
             {dims.height, dims.stride_pixels, dims.channel_count,
              dims.sizeof_channel, dims.height});
 }

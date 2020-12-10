@@ -429,6 +429,7 @@ int main(int argc, char** argv) {
   bool do_direct = false;
   bool do_gaussian = false;
   bool do_single_kernel = false;
+  bool do_staggered = false;
   bool do_check = false;
   bool do_benchmark = false;
   bool do_float2 = false;
@@ -451,6 +452,8 @@ int main(int argc, char** argv) {
       do_gaussian = true;
     else if (a == "-single-kernel")
       do_single_kernel = true;
+    else if (a == "-staggered")
+      do_staggered = true;
     else if (a == "-check")
       do_check = true;
     else if (a == "-benchmark")
@@ -556,6 +559,16 @@ int main(int argc, char** argv) {
   } else if (do_half2) {
     convert_and_test<half2>(pixels.get(), dims, radius, n_passes, 2,
                             sizeof(half), "(half2)");
+  } else if (do_staggered) {
+    auto temp2 = cuda_malloc_unique<float4>(allocated_bytes(dims));
+    auto temp3 = cuda_malloc_unique<float4>(allocated_bytes(dims));
+    timeit("staggered", [&]() {
+      staggered_blur(dest.get(), source.get(), temp.get(), temp2.get(),
+                     temp3.get(), dims, radius, 2, 2);
+    });
+
+    // Copy result back to host
+    copy_image(pixels.get(), dest.get(), dims);
   } else {
     timeit("fastest blur", [&]() {
       smooth_blur(dest.get(), source.get(), temp.get(), dims, radius, n_passes,
