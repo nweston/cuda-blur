@@ -351,6 +351,19 @@ void run_benchmark_2(size_t width, size_t height, size_t channel_count,
       }
     };
 
+    int outputs_v = 1, outputs_h = 1;
+    for (int threads_v = 1; threads_v <= 3; threads_v++) {
+      for (int threads_h = 1; threads_h <= 3; threads_h++) {
+        run("standard " + std::to_string(outputs_v) +
+                std::to_string(outputs_h) + std::to_string(threads_v) +
+                std::to_string(threads_h),
+            [&]() {
+              smooth_blur(dest.get(), source.get(), temp.get(), dims, radius, 3,
+                          outputs_v, outputs_h, threads_v, threads_h);
+            });
+      }
+    }
+
     if (radius <= MAX_PRECOMPUTED_RADIUS) {
       for (int outputs = 1; outputs <= 4; outputs++) {
         run("precomputed " + std::to_string(outputs), [&]() {
@@ -367,28 +380,6 @@ void run_benchmark_2(size_t width, size_t height, size_t channel_count,
       });
     }
 
-    for (int outputs_v = 1; outputs_v <= 4; outputs_v++) {
-      for (int outputs_h = 1; outputs_h <= 4; outputs_h++) {
-        run("single " + std::to_string(outputs_v) + std::to_string(outputs_h),
-            [&]() {
-              single_kernel_blur(dest.get(), source.get(), temp.get(), dims,
-                                 radius, 3, outputs_h, outputs_v);
-            });
-
-        for (int threads_v = 1; threads_v <= 4; threads_v++) {
-          for (int threads_h = 1; threads_h <= 4; threads_h++) {
-            run("standard " + std::to_string(outputs_v) +
-                    std::to_string(outputs_h) + std::to_string(threads_v) +
-                    std::to_string(threads_h),
-                [&]() {
-                  smooth_blur(dest.get(), source.get(), temp.get(), dims,
-                              radius, 3, outputs_v, outputs_h, threads_v,
-                              threads_h);
-                });
-          }
-        }
-      }
-    }
     std::cout << "fastest: " << best_name << " " << best_time << " ms\n\n";
   }
 }
@@ -401,10 +392,6 @@ static void run_benchmark_1(int width, int height) {
   run_benchmark_2<float2>(width, height, 2, sizeof(float));
   std::cout << "\nfloat\n";
   run_benchmark_2<float>(width, height, 1, sizeof(float));
-  std::cout << "\nhalf4\n";
-  run_benchmark_2<half4>(width, height, 4, sizeof(half));
-  std::cout << "\nhalf2\n";
-  run_benchmark_2<half2>(width, height, 2, sizeof(half));
 }
 
 static void run_benchmark() {
