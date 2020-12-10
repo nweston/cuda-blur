@@ -264,16 +264,16 @@ __global__ void repeated_vertical_box_blur_kernel(ImageT* dest,
 template <class ImageT>
 __global__ void staggered_vertical_box_blur_kernel(ImageT* dest,
                                                    const ImageT* source,
-                                                   ImageT* temp1, ImageT* temp2,
+                                                   ImageT* temp,
                                                    image_dims dims,
                                                    int radius) {
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
     // Source and dest images for all three passes
     const ImageT* s0 = source;
-    const ImageT* s1 = temp1;
-    const ImageT* s2 = temp2;
-    ImageT* d0 = temp1;
-    ImageT* d1 = temp2;
+    const ImageT* s1 = dest;
+    const ImageT* s2 = temp;
+    ImageT* d0 = dest;
+    ImageT* d1 = temp;
     ImageT* d2 = dest;
     int r0 = radius / 3;
     int r1 = (radius - r0) / 2;
@@ -604,9 +604,8 @@ void single_kernel_blur(ImageT* dest, const ImageT* source, ImageT* temp,
 // the first, and the third pass R behind that. This hopefully maximizes
 // cache locality.
 template <class ImageT>
-void staggered_blur(ImageT* dest, const ImageT* source, ImageT* temp1,
-                    ImageT* temp2, ImageT* temp3, image_dims dims, int radius,
-                    int outputs_per_thread_v = 1,
+void staggered_blur(ImageT* dest, const ImageT* source, ImageT* temp,
+                    image_dims dims, int radius, int outputs_per_thread_v = 1,
                     int outputs_per_thread_h = 1) {
   const int BLOCK_WIDTH = 32;
 
@@ -614,10 +613,10 @@ void staggered_blur(ImageT* dest, const ImageT* source, ImageT* temp1,
   {
     int grid_dim = n_blocks(dims.width, BLOCK_WIDTH, outputs_per_thread_v);
     staggered_vertical_box_blur_kernel<<<grid_dim, BLOCK_WIDTH>>>(
-        temp3, source, temp1, temp2, dims, radius);
+        temp, source, dest, dims, radius);
   }
 
-  transpose(dest, temp3, dims);
+  transpose(dest, temp, dims);
 
   // Horizontal blur
   {
@@ -628,12 +627,12 @@ void staggered_blur(ImageT* dest, const ImageT* source, ImageT* temp1,
     int grid_dim =
         n_blocks(transpose_dims.width, BLOCK_WIDTH, outputs_per_thread_h);
     staggered_vertical_box_blur_kernel<<<grid_dim, BLOCK_WIDTH>>>(
-        temp3, dest, temp1, temp2, transpose_dims, radius);
+        temp, dest, dest, transpose_dims, radius);
   }
 
   // Transpose back to the original format. This version of the dims includes
   // the extra height.
-  transpose(dest, temp3,
+  transpose(dest, temp,
             {dims.height, dims.stride_pixels, dims.channel_count,
              dims.sizeof_channel, dims.height});
 }

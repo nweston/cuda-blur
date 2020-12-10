@@ -191,8 +191,6 @@ static void run_checks_internal(T* pixels, image_dims dims,
   auto source = alloc_and_copy(pixels, dims);
   auto dest = cuda_malloc_unique<T>(allocated_bytes(dims));
   auto temp = cuda_malloc_unique<T>(allocated_bytes(dims));
-  auto temp2 = cuda_malloc_unique<T>(allocated_bytes(dims));
-  auto temp3 = cuda_malloc_unique<T>(allocated_bytes(dims));
 
   std::vector<int> radii{1, 3, 5, 10, 20, 50, 100};
   auto baseline = std::make_unique<float4[]>(allocated_pixels(dims));
@@ -245,8 +243,8 @@ static void run_checks_internal(T* pixels, image_dims dims,
           check_result("single " + std::to_string(outputs_v) +
                        std::to_string(outputs_h));
 
-          staggered_blur(dest.get(), source.get(), temp.get(), temp2.get(),
-                         temp3.get(), dims, radius, outputs_h, outputs_v);
+          staggered_blur(dest.get(), source.get(), temp.get(), dims, radius,
+                         outputs_h, outputs_v);
           check_result("staggered " + std::to_string(outputs_v) +
                        std::to_string(outputs_h));
         }
@@ -567,11 +565,8 @@ int main(int argc, char** argv) {
     convert_and_test<half2>(pixels.get(), dims, radius, n_passes, 2,
                             sizeof(half), "(half2)");
   } else if (do_staggered) {
-    auto temp2 = cuda_malloc_unique<float4>(allocated_bytes(dims));
-    auto temp3 = cuda_malloc_unique<float4>(allocated_bytes(dims));
     timeit("staggered", [&]() {
-      staggered_blur(dest.get(), source.get(), temp.get(), temp2.get(),
-                     temp3.get(), dims, radius, 2, 2);
+      staggered_blur(dest.get(), source.get(), temp.get(), dims, radius, 2, 2);
     });
 
     // Copy result back to host
