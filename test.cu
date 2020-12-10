@@ -385,6 +385,17 @@ void run_benchmark_2(size_t width, size_t height, size_t channel_count,
       });
     }
 
+    for (int outputs_v = 1; outputs_v <= 4; outputs_v++) {
+      for (int outputs_h = 1; outputs_h <= 4; outputs_h++) {
+        run("staggered " + std::to_string(outputs_v) +
+                std::to_string(outputs_h),
+            [&]() {
+              staggered_blur(dest.get(), source.get(), temp.get(), dims, radius,
+                             outputs_v, outputs_h);
+            });
+      }
+    }
+
     std::cout << "fastest: " << best_name << " " << best_time << " ms\n\n";
   }
 }
