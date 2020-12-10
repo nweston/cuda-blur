@@ -234,34 +234,6 @@ __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
 }
 
 template <class ImageT>
-__global__ void repeated_vertical_box_blur_kernel(ImageT* dest,
-                                                  const ImageT* source,
-                                                  ImageT* temp, image_dims dims,
-                                                  int radius, int n_passes) {
-  float scale = 1.0f / (2 * radius + 1);
-  n_passes = min(n_passes, radius);
-
-  for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
-    const ImageT* from = source;
-    // FIXME: only works for 3 passes
-    ImageT* toBuffers[] = {dest, temp, dest};
-
-    int remaining = radius;
-    for (int i = 0; i < n_passes; i++) {
-      ImageT* to = toBuffers[i];
-      int this_radius = remaining / (n_passes - i);
-      remaining -= this_radius;
-
-      sliding_window_blur(
-          to, from, 0, dims.height, dims.height, this_radius,
-          [x, &dims](int y) { return pixel_index(dims, x, y); });
-
-      from = to;
-    }
-  }
-}
-
-template <class ImageT>
 __global__ void staggered_vertical_box_blur_kernel(ImageT* dest,
                                                    const ImageT* source,
                                                    ImageT* temp,
@@ -559,44 +531,6 @@ void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
             {dims.height, dims.stride_pixels, dims.channel_count,
              dims.sizeof_channel, dims.height});
   assert(to == dest);
-}
-
-// Repeated box blur with the sliding window method, with multiple blur
-// passes per kernel launch. This might give better cache performance by
-// processing the same column multiple times in a row.
-template <class ImageT>
-void single_kernel_blur(ImageT* dest, const ImageT* source, ImageT* temp,
-                        image_dims dims, int radius, int n_passes,
-                        int outputs_per_thread_v = 1,
-                        int outputs_per_thread_h = 1) {
-  const int BLOCK_WIDTH = 32;
-
-  // Vertical blur
-  {
-    int grid_dim = n_blocks(dims.width, BLOCK_WIDTH, outputs_per_thread_v);
-    repeated_vertical_box_blur_kernel<<<grid_dim, BLOCK_WIDTH>>>(
-        temp, source, dest, dims, radius, n_passes);
-  }
-
-  transpose(dest, temp, dims);
-
-  // Horizontal blur
-  {
-    // Transpose turns any horizontal padding into vertical padding. Ignore
-    // those extra pixels when blurring.
-    image_dims transpose_dims = {dims.height, dims.width, dims.channel_count,
-                                 dims.sizeof_channel, dims.height};
-    int grid_dim =
-        n_blocks(transpose_dims.width, BLOCK_WIDTH, outputs_per_thread_h);
-    repeated_vertical_box_blur_kernel<<<grid_dim, BLOCK_WIDTH>>>(
-        temp, dest, dest, transpose_dims, radius, n_passes);
-  }
-
-  // Transpose back to the original format. This version of the dims includes
-  // the extra height.
-  transpose(dest, temp,
-            {dims.height, dims.stride_pixels, dims.channel_count,
-             dims.sizeof_channel, dims.height});
 }
 
 // Repeated box blur with the sliding window method, with multiple blur

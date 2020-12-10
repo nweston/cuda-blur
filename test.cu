@@ -238,11 +238,6 @@ static void run_checks_internal(T* pixels, image_dims dims,
           check_result("outputs " + std::to_string(outputs_v) +
                        std::to_string(outputs_h));
 
-          single_kernel_blur(dest.get(), source.get(), temp.get(), dims, radius,
-                             n_passes, outputs_h, outputs_v);
-          check_result("single " + std::to_string(outputs_v) +
-                       std::to_string(outputs_h));
-
           staggered_blur(dest.get(), source.get(), temp.get(), dims, radius,
                          outputs_h, outputs_v);
           check_result("staggered " + std::to_string(outputs_v) +
@@ -444,7 +439,6 @@ int main(int argc, char** argv) {
   bool do_npp = false;
   bool do_direct = false;
   bool do_gaussian = false;
-  bool do_single_kernel = false;
   bool do_staggered = false;
   bool do_check = false;
   bool do_benchmark = false;
@@ -466,8 +460,6 @@ int main(int argc, char** argv) {
       do_direct = true;
     else if (a == "-gaussian")
       do_gaussian = true;
-    else if (a == "-single-kernel")
-      do_single_kernel = true;
     else if (a == "-staggered")
       do_staggered = true;
     else if (a == "-check")
@@ -552,13 +544,6 @@ int main(int argc, char** argv) {
     timeit("gaussian", [&]() {
       precomputed_gaussian_blur(dest.get(), source.get(), temp.get(), dims,
                                 radius, 2);
-    });
-  }
-
-  if (do_single_kernel) {
-    timeit("single kernel", [&]() {
-      single_kernel_blur(dest.get(), source.get(), temp.get(), dims, radius,
-                         n_passes, 1, 1);
     });
   }
 
