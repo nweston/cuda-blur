@@ -111,6 +111,7 @@ __device__ static float2& operator-=(float2& a, const float2& b) {
 
 void default_error_handler(const char* file, int line, const char* error) {
   std::cerr << "CUDA failure " << file << ":" << line << " " << error << "\n";
+  exit(1);
 }
 
 // Called whenever a CUDA function returns an error. Reassign to provide your
