@@ -11,7 +11,7 @@ NPP_LIBS = -lnppig_static -lnppif_static -lnppc_static -lculibos
 EXRPATH = /usr/local/openexr-2.5.2
 NVCCFLAGS = --compiler-options="$(WFLAGS)" -std=c++17 -g
 LINKFLAGS = -L${CUDAPATH}/lib64 -L$(EXRPATH)/lib -pthread -lcuda -lcudart_static -ldl -lrt \
-	${NPP_LIBS}
+	${NPP_LIBS} -static-libstdc++ -static-libgcc
 CXXFLAGS = -std=c++17 $(WFLAGS) -Wpedantic -I$(EXRPATH)/include -I${CUDAPATH}/include -g
 
 blur-test: test.o exr.o
