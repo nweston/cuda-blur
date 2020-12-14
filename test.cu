@@ -227,14 +227,15 @@ static void run_checks_internal(T* pixels, image_dims dims,
       };
 
       // Use iterated box blur, one thread per column, as the baseline.
-      smooth_blur(dest.get(), source.get(), temp.get(), dims, radius, n_passes);
+      repeated_box_blur(dest.get(), source.get(), temp.get(), dims, radius,
+                        n_passes);
       copy_image(baseline.get(), dest.get(), dims);
 
       // Multiple outputs per thread
       for (int outputs_v = 2; outputs_v <= 3; outputs_v++) {
         for (int outputs_h = 2; outputs_h <= 3; outputs_h++) {
-          smooth_blur(dest.get(), source.get(), temp.get(), dims, radius,
-                      n_passes, outputs_v, outputs_h, 1, 1);
+          repeated_box_blur(dest.get(), source.get(), temp.get(), dims, radius,
+                            n_passes, outputs_v, outputs_h, 1, 1);
           check_result("outputs " + std::to_string(outputs_v) +
                        std::to_string(outputs_h));
 
@@ -248,8 +249,8 @@ static void run_checks_internal(T* pixels, image_dims dims,
       // Column splitting
       for (int threads_v = 2; threads_v <= 4; threads_v++) {
         for (int threads_h = 2; threads_h <= 4; threads_h++) {
-          smooth_blur(dest.get(), source.get(), temp.get(), dims, radius,
-                      n_passes, 1, 1, threads_v, threads_h);
+          repeated_box_blur(dest.get(), source.get(), temp.get(), dims, radius,
+                            n_passes, 1, 1, threads_v, threads_h);
           check_result("columns " + std::to_string(threads_v) +
                        std::to_string(threads_h));
         }
@@ -358,8 +359,9 @@ void run_benchmark_2(size_t width, size_t height, size_t channel_count,
                 std::to_string(outputs_h) + std::to_string(threads_v) +
                 std::to_string(threads_h),
             [&]() {
-              smooth_blur(dest.get(), source.get(), temp.get(), dims, radius, 3,
-                          outputs_v, outputs_h, threads_v, threads_h);
+              repeated_box_blur(dest.get(), source.get(), temp.get(), dims,
+                                radius, 3, outputs_v, outputs_h, threads_v,
+                                threads_h);
             });
       }
     }
@@ -424,8 +426,8 @@ void convert_and_test(float4* pixels, image_dims dims, int radius, int n_passes,
   auto temp2 = cuda_malloc_unique<T>(allocated_bytes(dims2));
 
   timeit("fastest blur " + label, [&]() {
-    smooth_blur(dest2.get(), source2.get(), temp2.get(), dims, radius, n_passes,
-                3, 3, 1, 2);
+    repeated_box_blur(dest2.get(), source2.get(), temp2.get(), dims, radius,
+                      n_passes, 3, 3, 1, 2);
   });
 
   // Copy result back to host and convert
@@ -505,8 +507,9 @@ int main(int argc, char** argv) {
         timeit("outputs/thread " + std::to_string(outputs_v) +
                    std::to_string(outputs_h),
                [&]() {
-                 smooth_blur(dest.get(), source.get(), temp.get(), dims, radius,
-                             n_passes, outputs_v, outputs_h, 1, 2);
+                 repeated_box_blur(dest.get(), source.get(), temp.get(), dims,
+                                   radius, n_passes, outputs_v, outputs_h, 1,
+                                   2);
                });
       }
     }
@@ -518,8 +521,9 @@ int main(int argc, char** argv) {
         timeit("threads/column " + std::to_string(threads_v) +
                    std::to_string(threads_h),
                [&]() {
-                 smooth_blur(dest.get(), source.get(), temp.get(), dims, radius,
-                             n_passes, 1, 1, threads_v, threads_h);
+                 repeated_box_blur(dest.get(), source.get(), temp.get(), dims,
+                                   radius, n_passes, 1, 1, threads_v,
+                                   threads_h);
                });
       }
     }
@@ -568,9 +572,9 @@ int main(int argc, char** argv) {
     // Copy result back to host
     copy_image(pixels.get(), dest.get(), dims);
   } else {
-    timeit("fastest blur", [&]() {
-      smooth_blur(dest.get(), source.get(), temp.get(), dims, radius, n_passes,
-                  3, 3, 1, 2);
+    timeit("standard blur", [&]() {
+      repeated_box_blur(dest.get(), source.get(), temp.get(), dims, radius,
+                        n_passes, 3, 3, 1, 2);
     });
 
     // Copy result back to host

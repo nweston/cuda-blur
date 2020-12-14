@@ -472,10 +472,12 @@ __global__ void vertical_precomputed_blur_kernel(ImageT* dest,
 // dest and source may point to the same image (if you don't need to keep the
 // source image and want to save some memory).
 template <class ImageT>
-void smooth_blur(ImageT* dest, const ImageT* source, ImageT* temp,
-                 image_dims dims, int radius, int n_passes,
-                 int outputs_per_thread_v = 1, int outputs_per_thread_h = 1,
-                 int threads_per_column_v = 1, int threads_per_column_h = 1) {
+void repeated_box_blur(ImageT* dest, const ImageT* source, ImageT* temp,
+                       image_dims dims, int radius, int n_passes,
+                       int outputs_per_thread_v = 1,
+                       int outputs_per_thread_h = 1,
+                       int threads_per_column_v = 1,
+                       int threads_per_column_h = 1) {
   const int BLOCK_WIDTH = 128;
 
   // Each blur pass and transpose needs to read from one image and write to
