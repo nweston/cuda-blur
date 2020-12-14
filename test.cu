@@ -13,6 +13,24 @@
 
 #include "blur.cu"  // Include source directly for now
 
+// ===== Error handling =====
+#define cudaCheckError(code)                                           \
+  {                                                                    \
+    if ((code) != cudaSuccess) {                                       \
+      handle_cuda_error(__FILE__, __LINE__, cudaGetErrorString(code)); \
+    }                                                                  \
+  }
+
+void default_error_handler(const char* file, int line, const char* error) {
+  std::cerr << "CUDA failure " << file << ":" << line << " " << error << "\n";
+  exit(1);
+}
+
+// Called whenever a CUDA function returns an error. Reassign to provide your
+// own error handling.
+using error_handler_t = void (*)(const char*, int, const char*);
+error_handler_t handle_cuda_error = &default_error_handler;
+
 // ===== half4 type =====
 struct half4 {
   half x;
