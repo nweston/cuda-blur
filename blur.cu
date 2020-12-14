@@ -226,8 +226,6 @@ __global__ void vertical_box_blur_kernel(ImageT* dest, const ImageT* source,
   int y_start = threadIdx.y * slice_height;
   int y_limit = min(static_cast<int>(dims.height), y_start + slice_height);
 
-  float scale = 1.0f / (2 * radius + 1);
-
   for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
     sliding_window_blur(dest, source, y_start, y_limit, dims.height, radius,
                         [x, &dims](int y) { return pixel_index(dims, x, y); });
