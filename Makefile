@@ -8,7 +8,7 @@ WFLAGS =  -Werror -Wall -Wno-error=unused-function
 
 NPP_LIBS = -lnppig_static -lnppif_static -lnppc_static -lculibos
 
-EXRPATH = /usr/local/openexr-2.5.2
+EXRPATH = /usr/local/shs/openexr-2.5.2
 NVCCFLAGS = --compiler-options="$(WFLAGS)" -std=c++17 -g
 LINKFLAGS = -L${CUDAPATH}/lib64 -L$(EXRPATH)/lib -pthread -lcuda -lcudart_static -ldl -lrt \
 	${NPP_LIBS} -static-libstdc++ -static-libgcc
