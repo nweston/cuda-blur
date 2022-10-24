@@ -384,6 +384,13 @@ void run_benchmark_2(size_t width, size_t height, size_t channel_count,
       }
     }
 
+    for (int outputs = 1; outputs <= 4; outputs++) {
+      run("direct gauss " + std::to_string(outputs), [&]() {
+        direct_gaussian_blur(dest.get(), source.get(), temp.get(), dims, radius,
+                             outputs);
+      });
+    }
+
     if (radius <= MAX_PRECOMPUTED_RADIUS) {
       for (int outputs = 1; outputs <= 4; outputs++) {
         run("precomputed " + std::to_string(outputs), [&]() {
@@ -459,6 +466,7 @@ int main(int argc, char** argv) {
   bool do_npp = false;
   bool do_direct = false;
   bool do_gaussian = false;
+  bool do_direct_gaussian = false;
   bool do_staggered = false;
   bool do_check = false;
   bool do_benchmark = false;
@@ -494,6 +502,8 @@ int main(int argc, char** argv) {
       do_half4 = true;
     else if (a == "-half2")
       do_half2 = true;
+    else if (a == "-direct-gaussian")
+      do_direct_gaussian = true;
     else
       args.push_back(a);
   }
@@ -566,6 +576,13 @@ int main(int argc, char** argv) {
     timeit("gaussian", [&]() {
       precomputed_gaussian_blur(dest.get(), source.get(), temp.get(), dims,
                                 radius, 2);
+    });
+  }
+
+  if (do_direct_gaussian) {
+    timeit("direct gaussian", [&]() {
+      direct_gaussian_blur(dest.get(), source.get(), temp.get(), dims, radius,
+                           2);
     });
   }
 

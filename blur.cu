@@ -446,6 +446,70 @@ __global__ void vertical_precomputed_blur_kernel(ImageT* dest,
   }
 }
 
+// ===== Single-pass direct Gaussian blur =====
+
+// True Gaussian blur using direction convolution, with one vertical pass and
+// one horizontal pass. The results of this do not match the repeat box blur,
+// particularly at the edges of the image.
+
+// Direct Gaussian for a single pixel
+template <class ImageT, class IndexerT>
+__device__ void direct_gaussian_blur(ImageT* dest, const ImageT* source,
+                                     int x_limit, int radius, float sigma,
+                                     int x, IndexerT indexer) {
+  auto sum = get_pixel(source, indexer(x));
+  float wsum = 1.0f;
+
+  for (int xi = x - radius; xi < x; xi++) {
+    float dx = x - xi;
+    float w = expf(-1 * dx * dx / (2 * sigma * sigma));
+    wsum += w;
+    sum += get_pixel(source, indexer(max(xi, 0))) * w;
+  }
+  for (int xi = x + 1; xi < x + radius + 1; xi++) {
+    float dx = xi - x;
+    float w = expf(-1 * dx * dx / (2 * sigma * sigma));
+    wsum += w;
+    sum += get_pixel(source, indexer(min(xi, int(x_limit - 1)))) * w;
+  }
+
+  set_pixel(dest, indexer(x), sum * (1.0f / wsum));
+}
+
+template <class ImageT>
+__global__ void horizontal_direct_gaussian_blur_kernel(ImageT* dest,
+                                                       const ImageT* source,
+                                                       image_dims dims,
+                                                       int radius) {
+  int y = cuda_index_y();
+  if (y >= dims.height)
+    return;
+
+  float sigma = radius / 2.57f;
+
+  for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
+    direct_gaussian_blur(dest, source, dims.width, radius, sigma, x,
+                         [y, &dims](int x) { return pixel_index(dims, x, y); });
+  }
+}
+
+template <class ImageT>
+__global__ void vertical_direct_gaussian_blur_kernel(ImageT* dest,
+                                                     const ImageT* source,
+                                                     image_dims dims,
+                                                     int radius) {
+  int y = cuda_index_y();
+  if (y >= dims.height)
+    return;
+
+  float sigma = radius / 2.57f;
+
+  for (int x = cuda_index_x(); x < dims.width; x += blockDim.x * gridDim.x) {
+    direct_gaussian_blur(dest, source, dims.height, radius, sigma, y,
+                         [x, &dims](int y) { return pixel_index(dims, x, y); });
+  }
+}
+
 // Blur an image with a repeated box blur.
 // 2 passes approximates a triangle filter, 3 is close enough to a Gaussian.
 // The radius param indicates the total radius: it will be divided
@@ -619,4 +683,18 @@ void precomputed_gaussian_blur(ImageT* dest, const ImageT* source, ImageT* temp,
                                                               dims, radius);
   vertical_precomputed_blur_kernel<<<grid_dim, BLOCK_DIM>>>(dest, temp, dims,
                                                             radius);
+}
+
+template <class ImageT>
+void direct_gaussian_blur(ImageT* dest, const ImageT* source, ImageT* temp,
+                          image_dims dims, int radius,
+                          int outputs_per_thread = 1) {
+  dim3 BLOCK_DIM(16, 8);
+  dim3 grid_dim(n_blocks(dims.width, BLOCK_DIM.x) / outputs_per_thread,
+                n_blocks(dims.height, BLOCK_DIM.y));
+
+  horizontal_direct_gaussian_blur_kernel<<<grid_dim, BLOCK_DIM>>>(temp, source,
+                                                                  dims, radius);
+  vertical_direct_gaussian_blur_kernel<<<grid_dim, BLOCK_DIM>>>(dest, temp,
+                                                                dims, radius);
 }
