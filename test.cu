@@ -484,9 +484,9 @@ int main(int argc, char** argv) {
   int radius = (args.size() > 2) ? std::stoi(args[2]) : 5;
   int n_passes = (args.size() > 3) ? std::stoi(args[3]) : 3;
 
-  auto [pixels, _dims] = read_exr(args[0]);
-  // Work around stupid "structured binding can't be captured" issue
-  auto dims = _dims;
+  std::unique_ptr<float4[]> pixels;
+  image_dims dims;
+  std::tie(pixels, dims) = read_exr(args[0]);
 
   if (do_check) {
     return run_checks(pixels.get(), dims);
