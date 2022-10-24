@@ -1,6 +1,5 @@
 #include "cuda_half.h"
 
-#include <nppi_filtering_functions.h>
 #include <algorithm>
 #include <limits>
 #include <memory>
@@ -167,35 +166,6 @@ static void convert_image(DestT* dest, SourceT* source, image_dims dest_dims,
           convert<DestT>(source[pixel_index(source_dims, x, y)]);
     }
   }
-}
-
-static void npp_blur(float4* dest, const float4* source, float4* temp,
-                     image_dims dims, int radius, int n_passes) {
-  auto* from = reinterpret_cast<Npp32f*>(temp);
-  auto* to = reinterpret_cast<Npp32f*>(dest);
-
-  NppiSize size = {static_cast<int>(dims.width), static_cast<int>(dims.height)};
-
-  int remaining = radius;
-  for (int i = 0; i < n_passes; i++) {
-    int this_radius = remaining / (n_passes - i);
-    remaining -= this_radius;
-    int width = 2 * this_radius + 1;
-
-    // On the first pass, read from the source image
-    const auto* s = (i == 0) ? reinterpret_cast<const Npp32f*>(source) : from;
-
-    size_t line_bytes = stride_bytes(dims);
-    nppiFilterBoxBorder_32f_C4R(s, line_bytes,               //
-                                size, {0, 0},                //
-                                to, line_bytes, size,        //
-                                {width, width},              // filter size
-                                {this_radius, this_radius},  // center
-                                NPP_BORDER_REPLICATE);
-    std::swap(to, from);
-  }
-
-  // FIXME: this will only work for odd numbers of passes
 }
 
 static float diff(const float4& a, const float4& b) {
@@ -463,7 +433,6 @@ void convert_and_test(float4* pixels, image_dims dims, int radius, int n_passes,
 int main(int argc, char** argv) {
   bool do_outputs = false;
   bool do_column_split = false;
-  bool do_npp = false;
   bool do_direct = false;
   bool do_gaussian = false;
   bool do_direct_gaussian = false;
@@ -482,8 +451,6 @@ int main(int argc, char** argv) {
       do_outputs = true;
     else if (a == "-columns")
       do_column_split = true;
-    else if (a == "-npp")
-      do_npp = true;
     else if (a == "-direct")
       do_direct = true;
     else if (a == "-gaussian")
@@ -555,68 +522,62 @@ int main(int argc, char** argv) {
                });
       }
     }
-  }
+    if (do_direct) {
+      for (int outputs = 2; outputs <= 3; outputs++) {
+        timeit("direct" + std::to_string(outputs), [&]() {
+          direct_blur_no_transpose(dest.get(), source.get(), temp.get(), dims,
+                                   radius, n_passes, outputs);
+        });
+      }
+    }
 
-  if (do_npp) {
-    timeit("npp blur", [&]() {
-      npp_blur(dest.get(), source.get(), temp.get(), dims, radius, n_passes);
-    });
-  }
-
-  if (do_direct) {
-    for (int outputs = 2; outputs <= 3; outputs++) {
-      timeit("direct" + std::to_string(outputs), [&]() {
-        direct_blur_no_transpose(dest.get(), source.get(), temp.get(), dims,
-                                 radius, n_passes, outputs);
+    if (do_gaussian) {
+      timeit("gaussian", [&]() {
+        precomputed_gaussian_blur(dest.get(), source.get(), temp.get(), dims,
+                                  radius, 2);
       });
     }
+
+    if (do_direct_gaussian) {
+      timeit("direct gaussian", [&]() {
+        direct_gaussian_blur(dest.get(), source.get(), temp.get(), dims, radius,
+                             2);
+      });
+    }
+
+    // Current fastest configuration (at 1920x1080, radius 10)
+    if (do_float2) {
+      convert_and_test<float2>(pixels.get(), dims, radius, n_passes, 2,
+                               sizeof(float), "(float2)");
+    } else if (do_float) {
+      convert_and_test<float>(pixels.get(), dims, radius, n_passes, 1,
+                              sizeof(float), "(float)");
+    } else if (do_half4) {
+      convert_and_test<half4>(pixels.get(), dims, radius, n_passes, 4,
+                              sizeof(half), "(half4)");
+    } else if (do_half2) {
+      convert_and_test<half2>(pixels.get(), dims, radius, n_passes, 2,
+                              sizeof(half), "(half2)");
+    } else if (do_staggered) {
+      timeit("staggered", [&]() {
+        staggered_blur(dest.get(), source.get(), temp.get(), dims, radius, 2,
+                       2);
+      });
+
+      // Copy result back to host
+      copy_image(pixels.get(), dest.get(), dims);
+    } else {
+      timeit("standard blur", [&]() {
+        repeated_box_blur(dest.get(), source.get(), temp.get(), dims, radius,
+                          n_passes, 3, 3, 1, 2);
+      });
+
+      // Copy result back to host
+      copy_image(pixels.get(), dest.get(), dims);
+    }
+
+    write_exr(args[1], dims, pixels.get());
+
+    return 0;
   }
-
-  if (do_gaussian) {
-    timeit("gaussian", [&]() {
-      precomputed_gaussian_blur(dest.get(), source.get(), temp.get(), dims,
-                                radius, 2);
-    });
-  }
-
-  if (do_direct_gaussian) {
-    timeit("direct gaussian", [&]() {
-      direct_gaussian_blur(dest.get(), source.get(), temp.get(), dims, radius,
-                           2);
-    });
-  }
-
-  // Current fastest configuration (at 1920x1080, radius 10)
-  if (do_float2) {
-    convert_and_test<float2>(pixels.get(), dims, radius, n_passes, 2,
-                             sizeof(float), "(float2)");
-  } else if (do_float) {
-    convert_and_test<float>(pixels.get(), dims, radius, n_passes, 1,
-                            sizeof(float), "(float)");
-  } else if (do_half4) {
-    convert_and_test<half4>(pixels.get(), dims, radius, n_passes, 4,
-                            sizeof(half), "(half4)");
-  } else if (do_half2) {
-    convert_and_test<half2>(pixels.get(), dims, radius, n_passes, 2,
-                            sizeof(half), "(half2)");
-  } else if (do_staggered) {
-    timeit("staggered", [&]() {
-      staggered_blur(dest.get(), source.get(), temp.get(), dims, radius, 2, 2);
-    });
-
-    // Copy result back to host
-    copy_image(pixels.get(), dest.get(), dims);
-  } else {
-    timeit("standard blur", [&]() {
-      repeated_box_blur(dest.get(), source.get(), temp.get(), dims, radius,
-                        n_passes, 3, 3, 1, 2);
-    });
-
-    // Copy result back to host
-    copy_image(pixels.get(), dest.get(), dims);
-  }
-
-  write_exr(args[1], dims, pixels.get());
-
-  return 0;
 }
