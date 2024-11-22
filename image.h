@@ -3,6 +3,8 @@
 #ifndef __IMAGE_H
 #define __IMAGE_H
 
+namespace cuda_blur {
+
 // Describes the dimensions and memory layout of an image.
 struct image_dims {
   size_t width;
@@ -37,4 +39,5 @@ __host__ __device__ inline size_t pixel_index(const image_dims& dims, int x,
   return y * dims.stride_pixels + x;
 }
 
+}  // namespace cuda_blur
 #endif  // __IMAGE_H

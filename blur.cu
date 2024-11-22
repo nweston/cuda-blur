@@ -4,6 +4,7 @@
 #include <algorithm>
 #include "image.h"
 
+namespace cuda_blur {
 // ===== Pixel functions =====
 
 // All of the blur kernels have two variables: ImageT which is the type
@@ -698,3 +699,4 @@ void direct_gaussian_blur(ImageT* dest, const ImageT* source, ImageT* temp,
   vertical_direct_gaussian_blur_kernel<<<grid_dim, BLOCK_DIM>>>(dest, temp,
                                                                 dims, radius);
 }
+}  // namespace cuda_blur
